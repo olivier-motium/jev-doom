@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+runs/
+_vizdoom.ini
+assets/*.wad
+assets/*.zip
+assets/FREEDOOM-CREDITS.txt
+.DS_Store
+
+.server.lock

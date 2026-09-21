@@ -1,0 +1,13 @@
+{
+  "name": "jev-doom-harness",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ai": "7.0.105"
+  },
+  "description": "Local observable Freedoom harness for Jev through TypeSafe or Vercel AI Gateway",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
