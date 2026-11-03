@@ -77,7 +77,6 @@ class Navigator:
         self.observed_heights = {}
         self.frame_seen = set()
         self.frame_hits = set()
-        self.view_version = 0
         self._nb_cache = {}
         self._edge_cache = {}
         self._reach = None
@@ -120,11 +119,10 @@ class Navigator:
                     )
                     sectors[s] = (support, *sectors[s][1:])
         self.sectors = sectors
-        door_types = MANUAL_DOORS
         door_sectors = {
             sec
             for line in self.lines
-            if line["special"] in door_types
+            if line["special"] in MANUAL_DOORS
             for sec in (line["r"], line["l"])
             if sec is not None and sectors[sec][1] - sectors[sec][0] < 56
         }
@@ -526,7 +524,6 @@ class Navigator:
             )
             self._union_prep = prep(self._observed_union)
             self._blocked_prep = prep(self._observed_blocked)
-        self.view_version += 1
         if changed or new_cells:
             # Route caches are keyed to real change: a new seen cell only re-opens its own 3x3 neighbourhood; a changed wall piece only the cells near it.
             self.cache.clear()

@@ -1,15 +1,16 @@
 """One real-time engine owner and one serial Jev worker. No frontend credentials."""
 
 import copy
+import hashlib
 import io
 import json
 import math
 import os
 import queue
 import subprocess
-import sys
 import threading
 import time
+import traceback
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,6 @@ from tactics import (
 ROOT = Path(__file__).resolve().parent
 RUNS = ROOT / "runs"
 RUNS.mkdir(exist_ok=True)
-RATE = 0.000000042
 RESERVE = 0.05
 CAP = float(os.getenv("JEV_BUDGET_USD", "15.00"))
 if not math.isfinite(CAP) or CAP < RESERVE:
@@ -246,9 +246,6 @@ class Harness:
         self.objective = None
         self.last_action = None
         self.controls = {}
-        self.active_path = []
-        self.standing_override = []
-        self.events = deque(maxlen=50)
         self.stop_event = threading.Event()
         self.result = {}
         self.recovery_total = 0
@@ -374,8 +371,6 @@ class Harness:
         self.memory = {}
         self.previous_health = 100
         self.last_damage_tick = -1000
-        self.previous_kills = 0
-        self.inferred_dead = set()
         self.position_history = deque(maxlen=35)
         self.last_failed_tick = -1000
         self.navigation_feedback = None
@@ -387,7 +382,6 @@ class Harness:
         self.sim_ticks = 0
         self.start_wall = time.monotonic()
         self.last_dispatch = 0
-        self.last_observe = 0
         self.last_nav = 0
         self.distance = 0
         self.last_position = None
@@ -398,6 +392,7 @@ class Harness:
         self.retry_at = 0
         self.pause_started = None
         self.paused_seconds = 0
+        self.free_run_ticks = 0
         self.continued_from = None
         self.last_checkpoint_tick = 0
         self.door_observations = {}
@@ -424,14 +419,13 @@ class Harness:
         self.cover_holding = False
         self.cover_holds = 0
         self.cover_hold_logged = None
-        if getattr(self, "investigation", None) is None:
+        if self.investigation is None:
             previous = sorted((RUNS / "investigations").glob("*.json"))
             self.investigation = json.loads(previous[-1].read_text()) if previous else None
         self.active_tactic = None
         self.tactic_outcomes = deque(maxlen=12)
         self.tactic_menu = []
         self.omitted_tactics = []
-        self.investigation = getattr(self, "investigation", None)
         self.failed_route_ticks = 0
         self.intervention_ticks = 0
         self.tactic_decisions = 0
@@ -753,7 +747,7 @@ class Harness:
         for o in s.objects:
             kind = category(o.name)
             id = f"{o.name}_{o.id}"
-            if not kind or o.id not in visible or id in self.inferred_dead:
+            if not kind or o.id not in visible:
                 continue
             entity = dict(
                 id=id,
@@ -778,8 +772,6 @@ class Harness:
                 and dist([e["x"], e["y"]], pos) < 40
             ):
                 self.memory.pop(id, None)
-                continue
-            if id in self.inferred_dead:
                 continue
             en = copy.copy(e)
             en["visible"] = id in seen
@@ -870,7 +862,6 @@ class Harness:
             self.nav_candidates = self.nav.candidates(pos)
         self.seq += 1
         interactions = []
-        from shapely.geometry import LineString, Point
 
         ray = LineString(
             [
@@ -1092,7 +1083,6 @@ class Harness:
             self.last_goal = -100
             self.control_rev += 1
         self.previous_health = p["health"]
-        self.previous_kills = p["kills"]
         if self.active_tactic:
             option = self.active_tactic["option"]
             target = option["subject"]
@@ -1127,7 +1117,7 @@ class Harness:
             state["player"].pop(k, None)
         observable = self.config.get("mode", "observable") == "observable"
         state["mode"] = self.config.get("mode", "observable")
-        state["exploration_target"] = getattr(self, "exploration_target", None)
+        state["exploration_target"] = self.exploration_target
         state["recent_tactic_outcomes"] = [
             {
                 k: v
@@ -1447,7 +1437,7 @@ class Harness:
                 )
 
     def end_tactic(self, reason):
-        active = getattr(self, "active_tactic", None)
+        active = self.active_tactic
         if not active:
             return
         outcome = measure(
@@ -1468,7 +1458,7 @@ class Harness:
         self.log("tactic_outcome", outcome=outcome)
         self.active_tactic = None
 
-    def cap_blocks(self, provider):
+    def cap_blocks(self):
         """Reserve the next call against the shared cumulative cap."""
         return self.ledger["charged_usd"] + RESERVE > CAP
 
@@ -1499,11 +1489,9 @@ class Harness:
         ):
             self.error = "Invalid probe request"
             return
-        if self.cap_blocks(provider):
+        if self.cap_blocks():
             self.error = "Budget prevents provider probe"
             return
-        import hashlib
-
         self.reserve_call(provider)
         self.call_seq += 1
         now = time.monotonic()
@@ -1524,14 +1512,6 @@ class Harness:
             questions_hash=hashlib.sha256(
                 json.dumps(questions, sort_keys=True).encode()
             ).hexdigest(),
-        )
-        (RUNS / "provider-probe-inputs").mkdir(exist_ok=True)
-        (
-            RUNS
-            / "provider-probe-inputs"
-            / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + str(job["id"]) + ".json")
-        ).write_text(
-            json.dumps({k: v for k, v in job.items() if not k.endswith("_mono")}, indent=2)
         )
         self.jobs.put(job)
         self.busy = True
@@ -1596,7 +1576,7 @@ class Harness:
         if len(json.dumps(dict(state=state, questions=questions)).encode()) > 48000:
             self.error = "Investigation capsule exceeds request bound"
             return
-        if self.cap_blocks(self.config.get("provider_key", "gateway")):
+        if self.cap_blocks():
             self.error = "Budget prevents investigation call"
             return
         self.reserve_call(self.config.get("provider_key", "gateway"))
@@ -1651,7 +1631,7 @@ class Harness:
         if len(json.dumps({"state": state, "questions": questions}).encode()) > 48000:
             self.finish("request_limit")
             return
-        if self.cap_blocks(self.config.get("provider_key", "gateway")):
+        if self.cap_blocks():
             self.finish("budget_limit")
             return
         self.reserve_call(self.config.get("provider_key", "gateway"))
@@ -2166,7 +2146,7 @@ class Harness:
                 dx, dy = bx - ax, by - ay
                 t = max(0, min(1, ((p["x"] - ax) * dx + (p["y"] - ay) * dy) / (dx * dx + dy * dy)))
                 face = math.degrees(math.atan2(ay + t * dy - p["y"], ax + t * dx - p["x"]))
-                self.approach_facing_ticks = getattr(self, "approach_facing_ticks", 0) + 1
+                self.approach_facing_ticks += 1
                 overrides.append(
                     "Approach facing: turning toward "
                     + destination["kind"]
@@ -2334,7 +2314,7 @@ class Harness:
             )
             self.cover = None
         self.cover_holding = False
-        if getattr(self, "cover_hold", None) and (
+        if self.cover_hold and (
             self.sim_ticks >= self.cover_hold["until_tick"]
             or self.observation.get("enemies")
             or not recent
@@ -2360,12 +2340,12 @@ class Harness:
             and not self.escape
             and not hold
             and move == "destination"
-            and getattr(self, "cover_hold", None)
+            and self.cover_hold
         ):
             self.cover_holding = True
-            if not getattr(self, "cover_hold_logged", None) == self.cover_hold["until_tick"]:
+            if self.cover_hold_logged != self.cover_hold["until_tick"]:
                 self.cover_hold_logged = self.cover_hold["until_tick"]
-                self.cover_holds = getattr(self, "cover_holds", 0) + 1
+                self.cover_holds += 1
                 self.log(
                     "cover_hold_start",
                     game_tick=self.sim_ticks,
@@ -2736,33 +2716,6 @@ class Harness:
 
         return bool(sides(x) & sides(y))
 
-    def restart_process(self):
-        """Re-exec this idle server in place so edited source loads with the same injected credentials; nothing is written or printed."""
-        if hasattr(self, "trace"):
-            self.trace.close()
-        if hasattr(self, "gateway_process"):
-            self.gateway_process.terminate()
-        if hasattr(self, "game"):
-            self.game.close()
-        os.chdir(ROOT)
-        os.execv(
-            sys.executable,
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "server:app",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                os.environ.get("JEV_DOOM_PORT", "8767"),
-                "--log-level",
-                "warning",
-                "--timeout-graceful-shutdown",
-                "2",
-            ],
-        )
-
     def episode_costs(self):
         if not hasattr(self, "run_budget_start"):
             return {}
@@ -2830,7 +2783,7 @@ class Harness:
             if self.config.get("timing", "real_time") == "real_time"
             else "Pause-assisted (labelled): simulation paused on provider/control-lease stalls and during bounded backoff"
         )
-        self.result["free_run_seconds"] = round(getattr(self, "free_run_ticks", 0) / 35, 2)
+        self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
         self.result["continued_from"] = self.continued_from
         self.result["cost_final"] = not self.busy
         self.result["pending_reservation_usd"] = RESERVE if self.busy else 0
@@ -2840,8 +2793,8 @@ class Harness:
             motor_intervention_seconds=round(self.intervention_ticks / 35, 3),
             tactic_decisions=self.tactic_decisions,
             predictions_met=self.predictions_met,
-            prediction_statuses=dict(getattr(self, "prediction_statuses", {})),
-            tactic_continuations=getattr(self, "tactic_continuations", 0),
+            prediction_statuses=dict(self.prediction_statuses),
+            tactic_continuations=self.tactic_continuations,
             damage_taken=self.observation.get("player", {}).get("damage_taken"),
             measurement="Native damage counter; failed-route time means commanded destination with stuck displacement; intervention time means a named motor override",
         )
@@ -2879,40 +2832,40 @@ class Harness:
             uninterrupted_real_time=(
                 self.paused_seconds == 0
                 and self.pause_started is None
-                and getattr(self, "stall_total", 0) == 0
+                and self.stall_total == 0
                 and self.recovery_total == 0
             ),
             timing_note="Real-time mode advances with released controls during provider stalls and recovery; pause-assisted mode stops simulation during those states",
         )
         self.result["cover_seek"] = dict(
-            activations=getattr(self, "covers", 0),
-            holds=getattr(self, "cover_holds", 0),
-            game_seconds=round(getattr(self, "cover_ticks", 0) / 35, 2),
+            activations=self.covers,
+            holds=self.cover_holds,
+            game_seconds=round(self.cover_ticks / 35, 2),
             attribution="Scripted movement assistance toward static cover from remembered shooters when damaged with no enemy in view; aim, trigger and weapon remain the model or selector choice",
         )
         self.result["barrel_clearance"] = dict(
-            activations=getattr(self, "barrel_clears", 0),
-            game_seconds=round(getattr(self, "barrel_clear_ticks", 0) / 35, 2),
+            activations=self.barrel_clears,
+            game_seconds=round(self.barrel_clear_ticks / 35, 2),
             attribution="Scripted movement assistance away from visible barrels when the model or selector would stand; aim, trigger and weapon remain the model or selector choice",
         )
         self.result["approach_facing"] = dict(
-            game_seconds=round(getattr(self, "approach_facing_ticks", 0) / 35, 2),
+            game_seconds=round(self.approach_facing_ticks / 35, 2),
             attribution="Motor facing toward the selected exit or switch line within48units of its approach point; the selection, USE-range rule and exit-activation gate are unchanged",
         )
         self.result["threat_turn"] = dict(
-            activations=getattr(self, "threat_turns", 0),
-            game_seconds=round(getattr(self, "threat_turn_ticks", 0) / 35, 2),
+            activations=self.threat_turns,
+            game_seconds=round(self.threat_turn_ticks / 35, 2),
             attribution="Scripted facing assistance when damaged with no enemy in view; movement, trigger and weapon remain the model or selector choice",
         )
         self.result["lift_assist"] = dict(
-            game_seconds=round(getattr(self, "lift_assist_ticks", 0) / 35, 2),
-            lift_calls=getattr(self, "lift_calls", 0),
-            lift_lowers=getattr(self, "lift_lowers", 0),
+            game_seconds=round(self.lift_assist_ticks / 35, 2),
+            lift_calls=self.lift_calls,
+            lift_lowers=self.lift_lowers,
             attribution="Scripted wait, call and ride on the committed route; the destination remains the model or selector choice",
         )
         self.result["doors"] = dict(
-            use_pulses=sum(getattr(self, "use_pulses", {}).values()),
-            use_pulses_by_line=dict(getattr(self, "use_pulses", {})),
+            use_pulses=sum(self.use_pulses.values()),
+            use_pulses_by_line=dict(self.use_pulses),
             measurement="Applied USE button ticks by nearest ray line, from use_pulse trace events; a pulse does not prove activation",
         )
         self.result.update(self.episode_costs())
@@ -2956,21 +2909,6 @@ class Harness:
                                 self.log("investigation_result", investigation=self.investigation)
                         elif cmd == "stop":
                             self.finish("stopped")
-                        elif cmd == "restart_server":
-                            if self.busy or self.status in (
-                                "running",
-                                "warming",
-                                "recovering",
-                                "waiting_provider",
-                                "paused",
-                            ):
-                                continue
-                            self.log(
-                                "server_restart",
-                                reason="Operator requested in-place restart to load current source",
-                                revision=self.config["revision"],
-                            )
-                            self.restart_process()
                         elif cmd == "pause" and self.status in (
                             "running",
                             "warming",
@@ -3086,7 +3024,7 @@ class Harness:
                         # Real time: the world runs on with released controls while a decision is awaited; only the assisted timing mode may pause it.
                         self.game.make_action([0] * len(BUTTONS), 1)
                         self.sim_ticks += 1
-                        self.free_run_ticks = getattr(self, "free_run_ticks", 0) + 1
+                        self.free_run_ticks += 1
                         if self.game.is_episode_finished():
                             self.finish(
                                 "dead"
@@ -3111,8 +3049,6 @@ class Harness:
                 if deadline < time.monotonic() - 0.2:
                     deadline = time.monotonic()
         except Exception as e:
-            import traceback
-
             traceback.print_exc()
             self.error = str(e)
             try:

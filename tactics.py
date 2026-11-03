@@ -521,10 +521,8 @@ def build_menu(state, nav):
             else next(
                 (
                     sec
-                    for sec, info in nav.lift_sectors.items()
-                    if wad_line is not None
-                    and wad_line["tag"]
-                    and nav.raw_sectors[sec][6] == wad_line["tag"]
+                    for sec in nav.lift_sectors
+                    if wad_line["tag"] and nav.raw_sectors[sec][6] == wad_line["tag"]
                 ),
                 None,
             )
