@@ -1,0 +1,76 @@
+"""Scripted cases the golden runs do not reach: late replies, an order change during a call,
+a provider failure with recovery, and a run that ends in death. Each is pinned like a golden run.
+"""
+
+import json
+
+import pytest
+from conftest import ORDER_TEXT, Case, check_golden, require_hash_seed
+
+pytestmark = pytest.mark.engine
+
+
+def events(run, kind):
+    return [event for event in run.events if event["type"] == kind]
+
+
+def test_replies_twenty_ticks_late(play):
+    require_hash_seed()
+    run = play(Case("map01_late20", delay=20, ticks=700))
+    check_golden("map01_late20", run)
+    # Today 10 of 35 late replies are dropped: the objective changed while they were pending.
+    expired = "Order or objective expired while request in flight; request fresh state"
+    outcomes = [(r["accepted"], r["override_reasons"]) for r in run.records()]
+    assert outcomes.count((True, [])) == 25
+    assert outcomes.count((False, [expired])) == 10
+    # Each reply lands 20 ticks after its request and the next request leaves at once.
+    ticks = [event["state"]["tick"] for event in events(run, "request")]
+    assert {later - earlier for earlier, later in zip(ticks[1:], ticks[2:])} == {20}
+
+
+def test_order_change_while_a_call_is_pending(play):
+    require_hash_seed()
+    run = play(Case("map01_order_change", delay=20, order_at=200, ticks=500))
+    check_golden("map01_order_change", run)
+    [order] = events(run, "orders")
+    assert order["revision"] == 1
+    after = run.events[run.events.index(order) :]
+    stale = next(event["record"] for event in after if event["type"] == "response")
+    assert not stale["accepted"]
+    assert stale["override_reasons"] == [
+        "Order or objective expired while request in flight; request fresh state"
+    ]
+    fresh = next(event for event in after if event["type"] == "request")
+    assert fresh["order_rev"] == 1
+    assert fresh["state"]["standing_order"] == ORDER_TEXT
+
+
+def test_provider_timeout_then_recovery(play):
+    require_hash_seed()
+    run = play(Case("map01_provider_timeout", fail=(4,), ticks=900))
+    check_golden("map01_provider_timeout", run)
+    h = run.harness
+    [pause] = events(run, "recovery_pause")
+    assert (pause["request"], pause["attempt"], pause["retry_delay_seconds"]) == (4, 1, 15)
+    [saved] = events(run, "checkpoint_saved")
+    assert saved["game_tick"] == pause["game_tick"]
+    [retry] = events(run, "recovery_request")
+    # Real time: the world runs on with released controls for the 15 s backoff, then one more
+    # tick while the fresh request is pending.
+    assert retry["game_tick"] - pause["game_tick"] == 15 * 35
+    assert h.free_run_ticks == 15 * 35 + 1
+    assert (h.status, h.recovery_total, h.recovery_attempts) == ("running", 1, 0)
+    [after_retry] = [r for r in run.records() if r["id"] == 5]
+    assert after_retry["accepted"]
+
+
+def test_run_ends_in_death(play):
+    require_hash_seed()
+    run = play(Case("map02_seed20_skill5", map="MAP02", seed=20, skill=5, ticks=2000))
+    check_golden("map02_seed20_skill5", run)
+    h = run.harness
+    result = json.loads((h.run_dir / "result.json").read_text())
+    assert (h.status, result["reason"]) == ("dead", "dead")
+    assert result["terminal_evidence"]["dead"]
+    assert result["player"]["health"] <= 0
+    assert events(run, "episode_end")
