@@ -2,7 +2,9 @@
 
 from pathlib import Path
 from urllib.request import urlopen
-import hashlib, io, zipfile
+import hashlib
+import io
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
 URL = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip"

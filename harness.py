@@ -1,6 +1,15 @@
 """One real-time engine owner and one serial Jev worker. No frontend credentials."""
 
-import copy, io, json, math, os, queue, subprocess, sys, threading, time
+import copy
+import io
+import json
+import math
+import os
+import queue
+import subprocess
+import sys
+import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -680,7 +689,10 @@ class Harness:
         if s is None:
             return
         g = self.game
-        var = lambda n: float(g.get_game_variable(getattr(vzd.GameVariable, n)))
+
+        def var(name):
+            return float(g.get_game_variable(getattr(vzd.GameVariable, name)))
+
         p = dict(
             x=round(var("POSITION_X"), 1),
             y=round(var("POSITION_Y"), 1),
@@ -733,7 +745,7 @@ class Harness:
         if self.last_position:
             self.distance += dist(pos, self.last_position)
         self.last_position = pos
-        label_px = {l.object_id: int(l.width * l.height) for l in s.labels}
+        label_px = {label.object_id: int(label.width * label.height) for label in s.labels}
         visible = {oid for oid, a in label_px.items() if a >= 3}
         entities = []
         seen = set()
@@ -903,37 +915,37 @@ class Harness:
                         needs_use=closed if v["kind"] == "door" else True,
                     )
                 )
-        for l in [] if self.nav.observable else self.nav.switches:
-            hit = ray.intersection(LineString([l["a"], l["b"]]))
+        for line in [] if self.nav.observable else self.nav.switches:
+            hit = ray.intersection(LineString([line["a"], line["b"]]))
             if not hit.is_empty:
                 # ViZDoom1.3.0 reports floor_height with its sign flipped against the WAD (runs/investigations/door-tracer-v29/line167-native-result.json). Doors move ceilings only, so the opening is runtime ceiling minus WAD floor.
                 gap = min(
                     (
                         s.sectors[sec].ceiling_height - self.nav.raw_sectors[sec][0]
-                        for sec in (l["r"], l["l"])
+                        for sec in (line["r"], line["l"])
                         if sec is not None
                     ),
                     default=None,
                 )
-                kind = line_kind(l["special"])
+                kind = line_kind(line["special"])
                 interaction = dict(
-                    id=l["id"],
+                    id=line["id"],
                     kind=kind,
                     distance=round(Point(pos).distance(hit), 1),
-                    special=l["special"],
+                    special=line["special"],
                     opening_height=round(gap, 1) if kind == "door" and gap is not None else None,
                     door_passable=(gap >= 56) if kind == "door" and gap is not None else None,
                     needs_use=kind != "door" or (gap is not None and gap < 56),
                 )
-                if l["special"] in MANUAL_DOORS and gap is not None:
-                    previous = self.door_observations.get(l["id"], {})
+                if line["special"] in MANUAL_DOORS and gap is not None:
+                    previous = self.door_observations.get(line["id"], {})
                     changed_tick = (
                         s.tic
                         if previous and gap != previous["opening_height"]
                         else previous.get("changed_tick", -1000)
                     )
                     sector = min(
-                        (sec for sec in (l["r"], l["l"]) if sec is not None),
+                        (sec for sec in (line["r"], line["l"]) if sec is not None),
                         key=lambda sec: (
                             s.sectors[sec].ceiling_height - self.nav.raw_sectors[sec][0]
                         ),
@@ -944,13 +956,13 @@ class Harness:
                     if previous and previous["passable"] != (gap >= 56):
                         self.log(
                             "door_transition",
-                            line=l["id"],
+                            line=line["id"],
                             game_tick=s.tic,
                             opening_height=gap,
                             passable=gap >= 56,
                             player=[p["x"], p["y"]],
                         )
-                    self.door_observations[l["id"]] = dict(
+                    self.door_observations[line["id"]] = dict(
                         opening_height=gap,
                         passable=gap >= 56,
                         changed_tick=changed_tick,
@@ -1084,7 +1096,6 @@ class Harness:
         if self.active_tactic:
             option = self.active_tactic["option"]
             target = option["subject"]
-            elapsed = (self.sim_ticks - self.active_tactic["started_tick"]) / 35
             arrived = (
                 target
                 and target["kind"] in ("frontier", "retreat")
@@ -1777,7 +1788,7 @@ class Harness:
                 delay = min(60, 15 * 2 ** min(self.recovery_attempts - 1, 2))
                 self.retry_at = time.monotonic() + delay
                 self.error = (
-                    f"Jev request failed. "
+                    "Jev request failed. "
                     + (
                         "Game preserved and paused"
                         if self.config.get("timing", "real_time") == "pause_assisted"
@@ -2109,7 +2120,10 @@ class Harness:
         ) and waypoint:
             face = math.degrees(math.atan2(waypoint[1] - p["y"], waypoint[0] - p["x"]))
         elif a["face"].startswith("door_"):
-            line = next((l for l in self.nav.lines if l["id"] == a["face"][5:]), None)
+            line = next(
+                (candidate for candidate in self.nav.lines if candidate["id"] == a["face"][5:]),
+                None,
+            )
             if line:
                 ax, ay = line["a"]
                 bx, by = line["b"]
@@ -2142,7 +2156,10 @@ class Harness:
             and a["face"] in ("path", "hold")
             and dist(pos, [destination["x"], destination["y"]]) < 48
         ):
-            line = next((l for l in self.nav.lines if l["id"] == destination["id"]), None)
+            line = next(
+                (candidate for candidate in self.nav.lines if candidate["id"] == destination["id"]),
+                None,
+            )
             if line:
                 ax, ay = line["a"]
                 bx, by = line["b"]
@@ -2242,16 +2259,23 @@ class Harness:
             ):
                 # Lower (v49): the lift is up and the route leaves below it. A switch line on the lift edge is inert from the lift side, so cross the nearest walk-over lowering line of this tag into the neighbour; the route then brings the player back onto the lowering lift.
                 walkovers = [
-                    l
-                    for l in self.nav.lift_lines
-                    if l["special"] in (10, 88, 120, 121) and here in (l["r"], l["l"])
+                    line
+                    for line in self.nav.lift_lines
+                    if line["special"] in (10, 88, 120, 121) and here in (line["r"], line["l"])
                 ]
                 if walkovers:
-                    l = min(
-                        walkovers, key=lambda l: LineString([l["a"], l["b"]]).distance(Point(pos))
+                    walkover = min(
+                        walkovers,
+                        key=lambda line: LineString([line["a"], line["b"]]).distance(Point(pos)),
                     )
-                    mx, my = (l["a"][0] + l["b"][0]) / 2, (l["a"][1] + l["b"][1]) / 2
-                    dx, dy = l["b"][0] - l["a"][0], l["b"][1] - l["a"][1]
+                    mx, my = (
+                        (walkover["a"][0] + walkover["b"][0]) / 2,
+                        (walkover["a"][1] + walkover["b"][1]) / 2,
+                    )
+                    dx, dy = (
+                        walkover["b"][0] - walkover["a"][0],
+                        walkover["b"][1] - walkover["a"][1],
+                    )
                     n = math.hypot(dx, dy) or 1
                     nx, ny = -dy / n, dx / n
                     side = (p["x"] - mx) * nx + (p["y"] - my) * ny
@@ -2263,7 +2287,7 @@ class Harness:
                         kind="lower",
                         sector=here,
                         floor=self.lift_observations[here]["floor"],
-                        line=l["id"],
+                        line=walkover["id"],
                         target=[round(tx, 1), round(ty, 1)],
                     )
         if (hold or {}).get("kind") != (self.lift_hold or {}).get("kind") or (hold or {}).get(
@@ -2372,8 +2396,8 @@ class Harness:
                 )
         if hold and hold["kind"] == "call":
             line = min(
-                (l for l in self.nav.lift_lines if hold["sector"] in (l["r"], l["l"])),
-                key=lambda l: LineString([l["a"], l["b"]]).distance(Point(pos)),
+                (line for line in self.nav.lift_lines if hold["sector"] in (line["r"], line["l"])),
+                key=lambda line: LineString([line["a"], line["b"]]).distance(Point(pos)),
                 default=None,
             )
             if line:
@@ -2613,7 +2637,7 @@ class Harness:
             hold
             and hold["kind"] == "call"
             and eligible
-            and any(eligible["id"] == l["id"] for l in self.nav.lift_lines)
+            and any(eligible["id"] == line["id"] for line in self.nav.lift_lines)
             and self.sim_ticks - self.lift_observations[hold["sector"]]["changed_tick"] > 6
         ):
             since = self.sim_ticks - self.use_latches.get("lift_" + str(hold["sector"]), -1000)
@@ -2706,9 +2730,10 @@ class Harness:
         return values
 
     def same_door(self, x, y):
-        sides = lambda id: (
-            {l[k] for l in self.nav.lines if l["id"] == id for k in ("r", "l")} - {None}
-        )
+        def sides(line_id):
+            lines = [line for line in self.nav.lines if line["id"] == line_id]
+            return {line[k] for line in lines for k in ("r", "l")} - {None}
+
         return bool(sides(x) & sides(y))
 
     def restart_process(self):

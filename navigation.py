@@ -1,7 +1,9 @@
 """Static-map geometric assistance. Model selects destinations; code plans legal paths."""
 
-import struct, math, heapq
-from collections import defaultdict, deque
+import struct
+import math
+import heapq
+from collections import defaultdict
 from shapely.geometry import LineString, Point, MultiPoint, box, GeometryCollection
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
@@ -42,11 +44,14 @@ def read_wad(path, mapname):
     vertices = list(struct.iter_unpack("<hh", ls["VERTEXES"]))
     sides = list(struct.iter_unpack("<hh8s8s8sH", ls["SIDEDEFS"]))
     sectors = list(struct.iter_unpack("<hh8s8shhh", ls["SECTORS"]))
+
+    def clean(side):
+        return [x.rstrip(b"\0").decode(errors="ignore") for x in side[2:5]]
+
     lines = []
     for j, (v1, v2, flags, special, tag, right, left) in enumerate(
         struct.iter_unpack("<7H", ls["LINEDEFS"])
     ):
-        clean = lambda s: [x.rstrip(b"\0").decode(errors="ignore") for x in s[2:5]]
         lines.append(
             dict(
                 id=f"line{j}",
@@ -88,12 +93,12 @@ class Navigator:
         grouped = defaultdict(list)
         neighbors = defaultdict(set)
         walls = []
-        for l in self.lines:
-            for sec in {l["r"], l["l"]} - {None}:
-                grouped[sec].append(LineString([l["a"], l["b"]]))
-            if l["r"] is not None and l["l"] is not None and l["r"] != l["l"]:
-                neighbors[l["r"]].add(l["l"])
-                neighbors[l["l"]].add(l["r"])
+        for line in self.lines:
+            for sec in {line["r"], line["l"]} - {None}:
+                grouped[sec].append(LineString([line["a"], line["b"]]))
+            if line["r"] is not None and line["l"] is not None and line["r"] != line["l"]:
+                neighbors[line["r"]].add(line["l"])
+                neighbors[line["l"]].add(line["r"])
         self.polygons = []
         self.supported_pits = []
         for s, segs in grouped.items():
@@ -118,45 +123,49 @@ class Navigator:
         door_types = MANUAL_DOORS
         door_sectors = {
             sec
-            for l in self.lines
-            if l["special"] in door_types
-            for sec in (l["r"], l["l"])
+            for line in self.lines
+            if line["special"] in door_types
+            for sec in (line["r"], line["l"])
             if sec is not None and sectors[sec][1] - sectors[sec][0] < 56
         }
         # Lift sectors (tagged by lift specials) travel between their WAD floor and the lowest neighbour floor; their boundary lines are not walls and adjacency accepts either position.
-        lift_tags = {l["tag"] for l in self.lines if l["special"] in LIFT_SPECIALS and l["tag"]}
+        lift_tags = {
+            line["tag"] for line in self.lines if line["special"] in LIFT_SPECIALS and line["tag"]
+        }
         self.lift_sectors = {}
         for sec, sdef in enumerate(sectors):
             if sdef[6] in lift_tags:
                 nb = {
                     o
-                    for l in self.lines
-                    if sec in (l["r"], l["l"])
-                    for o in (l["r"], l["l"])
+                    for line in self.lines
+                    if sec in (line["r"], line["l"])
+                    for o in (line["r"], line["l"])
                     if o is not None and o != sec
                 }
                 self.lift_sectors[sec] = dict(
                     high=sdef[0], low=min([sectors[o][0] for o in nb] + [sdef[0]])
                 )
         self.lift_lines = [
-            l
-            for l in self.lines
-            if l["special"] in LIFT_SPECIALS
-            and l["tag"]
-            and any(sectors[sec][6] == l["tag"] for sec in (l["r"], l["l"]) if sec is not None)
+            line
+            for line in self.lines
+            if line["special"] in LIFT_SPECIALS
+            and line["tag"]
+            and any(
+                sectors[sec][6] == line["tag"] for sec in (line["r"], line["l"]) if sec is not None
+            )
         ]
         moving_sectors = door_sectors | set(self.lift_sectors)
-        for l in self.lines:
-            seg = LineString([l["a"], l["b"]])
+        for line in self.lines:
+            seg = LineString([line["a"], line["b"]])
             # All one-sided/explicitly blocking walls stay solid. Doors are two-sided.
-            blocked = l["l"] is None or l["r"] is None or bool(l["flags"] & 1)
-            if not blocked and not ({l["r"], l["l"]} & moving_sectors):
-                rsec, lsec = sectors[l["r"]], sectors[l["l"]]
+            blocked = line["l"] is None or line["r"] is None or bool(line["flags"] & 1)
+            if not blocked and not ({line["r"], line["l"]} & moving_sectors):
+                rsec, lsec = sectors[line["r"]], sectors[line["l"]]
                 blocked = (
                     abs(rsec[0] - lsec[0]) > 24
                     or min(rsec[1], lsec[1]) - max(rsec[0], lsec[0]) < 56
                 )
-            l["navigation_barrier"] = blocked
+            line["navigation_barrier"] = blocked
             if blocked:
                 walls.append(seg)
         self._static_walls = unary_union(walls)
@@ -182,7 +191,7 @@ class Navigator:
         for s, p in self.polygons:
             x1, y1, x2, y2 = p.bounds
             if sectors[s][1] - sectors[s][0] < 56 and not any(
-                l["special"] and s in (l["r"], l["l"]) for l in self.lines
+                line["special"] and s in (line["r"], line["l"]) for line in self.lines
             ):
                 continue
             for x in range(math.floor(x1 / STEP), math.ceil(x2 / STEP) + 1):
@@ -244,9 +253,9 @@ class Navigator:
         self.obstacle_signature = ()
         self.actor_bounds = None
         self.switches = [
-            l
-            for l in self.lines
-            if l["special"]
+            line
+            for line in self.lines
+            if line["special"]
             in {
                 1,
                 7,
@@ -305,7 +314,7 @@ class Navigator:
                 137,
             }
         ]
-        self._line_geoms = [LineString([l["a"], l["b"]]) for l in self.lines]
+        self._line_geoms = [LineString([line["a"], line["b"]]) for line in self.lines]
         self._line_tree = STRtree(self._line_geoms)
         self._poly_geoms = [poly for _, poly in self.polygons]
         self._poly_sectors = [s for s, _ in self.polygons]
@@ -416,13 +425,13 @@ class Navigator:
                     key=lambda x: x[0],
                 )  # the depth buffer quantizes to 8 units, so the face the view stopped at may sit up to two quanta from the sample
 
-                def opaque(l):
-                    if l["l"] is None or l["r"] is None:
+                def opaque(line):
+                    if line["l"] is None or line["r"] is None:
                         return True
-                    ax, ay = l["a"]
-                    bx, by = l["b"]
+                    ax, ay = line["a"]
+                    bx, by = line["b"]
                     cross = (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)
-                    face = l.get("ftex", []) if cross <= 0 else l.get("btex", [])
+                    face = line.get("ftex", []) if cross <= 0 else line.get("btex", [])
                     return any(n not in ("", "-") for n in face)
 
                 pick = next(
@@ -829,15 +838,15 @@ class Navigator:
             )
             if len(picked) >= 7:
                 break
-        for l in self.switches:
-            mid = [(l["a"][0] + l["b"][0]) / 2, (l["a"][1] + l["b"][1]) / 2]
-            exit = l["special"] in (11, 51, 52, 124)
-            remembered_exit = exit and l["id"] in self.known_exits
+        for line in self.switches:
+            mid = [(line["a"][0] + line["b"][0]) / 2, (line["a"][1] + line["b"][1]) / 2]
+            exit = line["special"] in (11, 51, 52, 124)
+            remembered_exit = exit and line["id"] in self.known_exits
             if dist(mid, p) > 400 and not remembered_exit:
                 continue
-            cross = l["special"] in (52, 124)
-            dx = l["b"][0] - l["a"][0]
-            dy = l["b"][1] - l["a"][1]
+            cross = line["special"] in (52, 124)
+            dx = line["b"][0] - line["a"][0]
+            dy = line["b"][1] - line["a"][1]
             length = math.hypot(dx, dy)
             normal = [dy / length, -dx / length]
             approach = [
@@ -854,10 +863,10 @@ class Navigator:
             if not path or dist(path[-1], approach) > 20:
                 continue
             if exit:
-                self.known_exits.add(l["id"])
+                self.known_exits.add(line["id"])
             out.append(
                 dict(
-                    id=l["id"],
+                    id=line["id"],
                     kind="exit" if exit else "door_or_switch",
                     activation="cross" if cross else "use",
                     x=approach[0],
@@ -865,13 +874,13 @@ class Navigator:
                     line_x=mid[0],
                     line_y=mid[1],
                     distance=round(len(path) * STEP),
-                    failed=self.failed[l["id"]],
-                    uses=self.used[l["id"]],
+                    failed=self.failed[line["id"]],
+                    uses=self.used[line["id"]],
                     description="Approach exit, face its line and USE"
                     if exit and not cross
                     else "Cross exit line"
                     if exit
-                    else f"Approach interactive line, face it and USE; Doom special {l['special']}",
+                    else f"Approach interactive line, face it and USE; Doom special {line['special']}",
                 )
             )
         return sorted(
@@ -1208,8 +1217,13 @@ class Navigator:
         return dict(
             mode="assisted",
             lines=[
-                dict(a=l["a"], b=l["b"], special=l["special"], blocking=l["navigation_barrier"])
-                for l in self.lines
+                dict(
+                    a=line["a"],
+                    b=line["b"],
+                    special=line["special"],
+                    blocking=line["navigation_barrier"],
+                )
+                for line in self.lines
             ],
             trail=self.trail[-3000:],
             visited=sum(n > 0 for n in self.visits.values()),

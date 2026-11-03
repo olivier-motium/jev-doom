@@ -4,7 +4,6 @@ import asyncio
 import os
 import fcntl
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from dotenv import load_dotenv
@@ -17,7 +16,8 @@ try:
     fcntl.flock(_runtime_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     raise RuntimeError("Another server uses this checkout. Stop it before starting another.")
-from harness import Harness, ROOT
+# harness reads JEV_BUDGET_USD at import, so it must load after .env.
+from harness import Harness, ROOT  # noqa: E402
 
 h = Harness()
 

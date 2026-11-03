@@ -96,7 +96,7 @@ def build_menu(state, nav):
             if v["kind"] == "door" and v["spans"] and v.get("open_tick") is None
         ]
         if observable
-        else [l for l in nav.lines if l["special"] in MANUAL_DOORS]
+        else [line for line in nav.lines if line["special"] in MANUAL_DOORS]
     )
 
     def add(
@@ -158,11 +158,11 @@ def build_menu(state, nav):
         # A route through a closed manual door within its first segments carries USE for that door only; observed passability retires it.
         crossing = (
             [
-                (i, l, LineString([a, b]).intersection(LineString([l["a"], l["b"]])))
+                (i, line, LineString([a, b]).intersection(LineString([line["a"], line["b"]])))
                 for i, (a, b) in enumerate(zip(path[:5], path[1:5]))
-                for l in doors
-                if l["id"] not in known_open
-                and LineString([a, b]).intersects(LineString([l["a"], l["b"]]))
+                for line in doors
+                if line["id"] not in known_open
+                and LineString([a, b]).intersects(LineString([line["a"], line["b"]]))
             ]
             if subject and kind not in ("exit", "door_or_switch")
             else []
@@ -230,7 +230,9 @@ def build_menu(state, nav):
                     text="No observable effect is exposed for this face; outcome stays unknown until seen",
                 )
         elif subject and subject["kind"] == "door_or_switch" and use == "use":
-            line = next((l for l in nav.lines if l["id"] == subject["id"]), None)
+            line = next(
+                (candidate for candidate in nav.lines if candidate["id"] == subject["id"]), None
+            )
             lk = line_kind(line["special"]) if line else "switch"
             if lk == "door":
                 prediction = dict(
@@ -478,7 +480,7 @@ def build_menu(state, nav):
     lines = [e for e in advance if e["kind"] == "door_or_switch"]
     fronts = [e for e in advance if e["kind"] == "frontier"]
     # A line counts as used when any line acting on the same target was pulsed: same lift tag, or same door sector.
-    by_id = {} if observable else {l["id"]: l for l in nav.lines}
+    by_id = {} if observable else {line["id"]: line for line in nav.lines}
     used_tags = {
         by_id[i]["tag"] for i, n in nav.used.items() if n and i in by_id and by_id[i]["tag"]
     }
@@ -491,10 +493,13 @@ def build_menu(state, nav):
     }
 
     def is_used(e):
-        l = by_id.get(e["id"])
+        wad_line = by_id.get(e["id"])
         return bool(e.get("uses")) or (
-            l is not None
-            and ((l["tag"] and l["tag"] in used_tags) or bool({l["r"], l["l"]} & used_sectors))
+            wad_line is not None
+            and (
+                (wad_line["tag"] and wad_line["tag"] in used_tags)
+                or bool({wad_line["r"], wad_line["l"]} & used_sectors)
+            )
         )
 
     fresh = [e for e in lines if not is_used(e)]
@@ -507,9 +512,9 @@ def build_menu(state, nav):
     )
     wall_tests = [e for e in fresh if e not in textured] if observable else []
     resume = [e for e in fronts if e["id"] == state.get("exploration_target")] if observable else []
-    lifts = {l["sector"]: l for l in state.get("lifts", [])}
+    lifts = {lift["sector"]: lift for lift in state.get("lifts", [])}
     for e in [e for e in lines if is_used(e)]:
-        l = by_id.get(e["id"])
+        wad_line = by_id.get(e["id"])
         target = (
             None
             if observable
@@ -517,11 +522,13 @@ def build_menu(state, nav):
                 (
                     sec
                     for sec, info in nav.lift_sectors.items()
-                    if l is not None and l["tag"] and nav.raw_sectors[sec][6] == l["tag"]
+                    if wad_line is not None
+                    and wad_line["tag"]
+                    and nav.raw_sectors[sec][6] == wad_line["tag"]
                 ),
                 None,
             )
-            if l is not None
+            if wad_line is not None
             else None
         )
         lift = lifts.get(target)
@@ -802,12 +809,19 @@ def measure(option, before, after, nav, reason, elapsed):
     elif pred["kind"] == "door_through":
         ax, ay = pred["a"]
         bx, by = pred["b"]
-        sd = lambda q: (bx - ax) * (q["y"] - ay) - (by - ay) * (q["x"] - ax)
-        metric = dict(side_before=round(sd(bp)), side_after=round(sd(p)))
-        passed = sd(bp) * sd(p) < 0
+
+        def side(q):
+            return (bx - ax) * (q["y"] - ay) - (by - ay) * (q["x"] - ax)
+
+        metric = dict(side_before=round(side(bp)), side_after=round(side(p)))
+        passed = side(bp) * side(p) < 0
     elif pred["kind"] == "lift":
-        b = next((l for l in before.get("lifts", []) if l["sector"] == pred.get("sector")), None)
-        a = next((l for l in after.get("lifts", []) if l["sector"] == pred.get("sector")), None)
+        b = next(
+            (lift for lift in before.get("lifts", []) if lift["sector"] == pred.get("sector")), None
+        )
+        a = next(
+            (lift for lift in after.get("lifts", []) if lift["sector"] == pred.get("sector")), None
+        )
         metric = dict(
             floor_before=b and b["floor"],
             floor_after=a and a["floor"],
