@@ -19,7 +19,7 @@ class VizdoomEngine:
         self.wad = wad
         self.game = None
 
-    def start(self, map_name, skill, seed, record_path=None):
+    def start(self, map_name, skill, seed, record_path=None, replay_path=None):
         self.close()
         self.game = game = vzd.DoomGame()
         game.set_doom_game_path(str(self.wad))
@@ -41,7 +41,9 @@ class VizdoomEngine:
         game.set_episode_timeout(35 * 600)
         game.set_map_exit_reward(1)
         game.init()
-        if record_path:
+        if replay_path:
+            game.replay_episode(str(replay_path))
+        elif record_path:
             game.new_episode(str(record_path))
         else:
             game.new_episode()
@@ -97,6 +99,10 @@ class VizdoomEngine:
 
     def step(self, buttons):
         self.game.make_action(buttons, 1)
+        return self.status()
+
+    def replay_step(self):
+        self.game.advance_action(1)
         return self.status()
 
     def release(self):

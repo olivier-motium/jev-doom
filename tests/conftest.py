@@ -254,6 +254,9 @@ class MemoryStore:
         if self.started:
             self.events.append(normal(event))
 
+    def record_path(self):
+        return None
+
     def append_probe(self, record):
         pass
 

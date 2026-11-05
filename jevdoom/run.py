@@ -162,7 +162,9 @@ class Run:
         self.control_rev += 1
 
     def new_game(self):
-        self.engine.start(self.config["map"], self.config["skill"], self.config["seed"])
+        self.engine.start(
+            self.config["map"], self.config["skill"], self.config["seed"], self.store.record_path()
+        )
         self.nav = Navigator((ROOT / "assets/freedoom2.wad").read_bytes(), self.config["map"])
         self.memory = {}
         self.previous_health = 100
@@ -281,12 +283,16 @@ class Run:
         self.config["start_type"] += ", observable mode"
         if timing == "pause_assisted":
             self.config["start_type"] += ", pause-assisted timing"
-        self.new_game()
-        self.episode += 1
         self.max_seconds = min(600, max(5, float(args.get("seconds", 90))))
         self.config["revision"] = args.get("revision", self.config["revision"])[:40]
-        name = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + self.config["revision"]
+        revision = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in self.config["revision"]
+        )
+        name = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + revision
         self.run_dir = self.store.open_run(name)
+        self.new_game()
+        self.episode += 1
         self.run_budget_start = copy.deepcopy(self.ledger)
         self.log(
             "episode_start",
@@ -1137,6 +1143,8 @@ class Run:
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
             self.store.write_result(self.result)
+        if self.store.record_path() is not None:
+            self.engine.close()
 
     def tick(self):
         with self.lock:

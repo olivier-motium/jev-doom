@@ -22,8 +22,17 @@ class FileStore:
         tmp.replace(path)
 
     def open_run(self, name):
-        self.run_dir = self.root / name
-        self.run_dir.mkdir(exist_ok=True)
+        if not name or Path(name).name != name or name in (".", ".."):
+            raise ValueError("Invalid run name")
+        suffix = 0
+        while True:
+            candidate = self.root / (name if suffix == 0 else f"{name}-{suffix}")
+            try:
+                candidate.mkdir()
+                self.run_dir = candidate
+                break
+            except FileExistsError:
+                suffix += 1
         if self.trace is not None:
             self.trace.close()
         self.trace = (self.run_dir / "trace.jsonl").open("a")
@@ -33,6 +42,9 @@ class FileStore:
         if self.trace is not None:
             self.trace.write(json.dumps(event, separators=(",", ":")) + "\n")
             self.trace.flush()
+
+    def record_path(self):
+        return self.run_dir / "episode.lmp" if self.run_dir is not None else None
 
     def append_probe(self, record):
         with (self.root / "provider-probes.jsonl").open("a") as handle:

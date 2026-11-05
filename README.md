@@ -15,7 +15,7 @@ cd jev-doom
 ./run.sh
 ```
 
-Open **http://127.0.0.1:8767**. The free preview loads a real engine frame without an API key. Setup creates an isolated Python environment, installs the locked Node dependencies, and downloads **Freedoom 0.13.0** from its official release. No proprietary Doom assets are needed or included.
+Open **http://127.0.0.1:8767**. Select **Local rule, no model** and start a run without an API key. Setup creates an isolated Python environment, installs the locked Node dependencies, and downloads **Freedoom 0.13.0** from its official release. No proprietary Doom assets are needed or included.
 
 If your default Python is newer, use `PYTHON=python3.13 ./setup.sh`. To use a different port: `PORT=8768 ./run.sh`.
 
@@ -34,6 +34,16 @@ Direct requests use `https://api.typesafe.ai/v1/systemone` with `jev-latest`. Ga
 
 The default run lasts **90 seconds**. The default controller is **Local rule, no model**: it needs no API key and makes no provider calls. Choose Jev for model decisions. Pause, stop, change orders, or switch maps between runs.
 
+## Replay without a key
+
+Each run records `episode.lmp`, its decision trace, and its result in `runs/<id>/`. To replay one locally:
+
+```sh
+./run.sh --replay runs/<id>
+```
+
+`./run.sh --demo` records a seeded local MAP01 run of up to 60 game seconds on first use, then replays it. Later uses replay the saved demo. Replay uses the recording and trace; it does not start Node or call a model. Keep `runs/` if you want to keep recordings.
+
 ## Spending and local data
 
 The default **$15 cumulative charged-or-reserved cap** covers both providers, including provider checks, and persists across restarts in `runs/budget.json`. Each Jev request reserves $0.05. When a valid reported cost arrives, it replaces the reservation. Unknown costs keep the reservation; launch-price estimates never replace it. The cap can therefore stop a run before $15 has actually been billed. The time selection is a maximum, not a guarantee: a fresh budget allows at most 300 unknown-cost requests, including checks, and high call frequency can exhaust it sooner. A request could cost more than its reservation, so also configure provider account limits.
@@ -44,11 +54,15 @@ Change `JEV_BUDGET_USD` in `.env` and restart to change the cap. Run traces and 
 
 Jev receives **observable** state as structured engine observations: visible entity identities and positions, viewed floor cells and wall pieces, and remembered observations with ages. This is **not a pixels-only agent**. Evaluator kill, hit and damage counters are withheld from model state. Code builds legal choices and executes the chosen motors. The rendered map and evaluator statistics are for inspection.
 
-The engine runs at 35 Hz. Real-time mode keeps advancing while normal requests are in flight; startup and explicit pause stop it; during provider stalls and recovery, an already-started real-time run continues with released controls. `pause_assisted` timing is a separate API option. Game time and wall time differ. MAP01 and MAP02 are supported; later maps are unvalidated. A terminal episode is not automatically a completed level. This repository makes no level-completion or model-performance claim.
+The engine runs at 35 Hz. In real-time mode, a chosen option continues while another decision is pending. When the option ends, controls are released until a valid decision is available. Startup and explicit pause stop the simulation; during recovery, an already-started real-time run continues with released controls. `pause_assisted` timing is a separate API option. Game time and wall time differ. MAP01 and MAP02 are supported; later maps are unvalidated. A terminal episode is not automatically a completed level. This repository makes no level-completion or model-performance claim.
+
+The local rule and a scripted delayed decider were compared with the earlier code on MAP01 and MAP02, seeds 41 and 42. Each current run lasted 1,040 game ticks. The baseline local-policy runs each made 209 requests; the current local runs made 92–108, a 48–56% reduction. Seen cells changed from 623 to 575, 552 to 640, 612 to 560, and 545 to 569, respectively. No current local run died.
+
+With replies delayed by 20 ticks, the earlier runs made 51–53 requests; the current runs made 45–47. The current runs released controls for 413–652 of 1,040 ticks. These results missed the planned request and idle-time targets. One baseline MAP02 run died at tick 1,000; no current delayed run died. These are model-free tests and do not establish Jev performance.
 
 ## Architecture
 
-`jevdoom/app.py` starts the local application. The `jevdoom/core` package builds observations, paths, tactics and controls. Runtime adapters own the engine, storage, dashboard and provider gateway. `gateway.mjs` connects to Jev providers. The dashboard polls state and displays an MJPEG stream. Provider replies are validated before use.
+`jevdoom/app.py` starts the local application or replay. The `jevdoom/core` package builds observations, paths, tactics and controls. Runtime adapters own the engine, recording, storage, dashboard and provider gateway. `gateway.mjs` connects to Jev providers. The dashboard polls state and displays an MJPEG stream and decision timeline. Provider replies are validated before use.
 
 **Vercel support means AI Gateway access, not hosting this application on Vercel.** The native engine, long-lived process and local files require a local machine or a suitably managed server. This release binds only to loopback and has no multi-user authentication. Do not expose it directly to the internet.
 
