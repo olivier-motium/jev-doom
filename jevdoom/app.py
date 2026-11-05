@@ -50,7 +50,11 @@ def main():
                     },
                 )
             )
-            while not run.result.get("reason") and not run.stop_event.is_set():
+            while (
+                not run.result.get("reason")
+                and not run.stop_event.is_set()
+                and run.status != "engine_error"
+            ):
                 threading.Event().wait(0.25)
             run_dir = getattr(run, "run_dir", None)
             run.shutdown()

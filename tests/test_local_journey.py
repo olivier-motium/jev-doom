@@ -126,3 +126,23 @@ def test_engine_start_failure_is_published():
     assert run.view()["status"] == "engine_error"
     assert run.view()["error"] == "engine start failed"
 
+
+def test_demo_surfaces_engine_start_error(monkeypatch, tmp_path):
+    import sys
+    import pytest
+    from jevdoom import app, run as run_module
+
+    class BrokenEngine(FakeEngine):
+        def start(self, map_name, skill, seed, record_path=None):
+            raise RuntimeError("engine start failed")
+
+    make_run = run_module.Run
+    monkeypatch.setattr(
+        run_module,
+        "Run",
+        lambda: make_run(engine=BrokenEngine(), decider=ImmediateLocal(), store=MemoryStore()),
+    )
+    monkeypatch.setattr(app, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["jevdoom", "--demo"])
+    with pytest.raises(RuntimeError, match="Demo recording failed: engine start failed"):
+        app.main()
