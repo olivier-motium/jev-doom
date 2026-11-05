@@ -12,11 +12,14 @@ pytestmark = pytest.mark.engine
 class IdleRecorder:
     def __init__(self):
         self.counts = Counter()
+        self.pending_fallback_ticks = 0
 
     def install(self, patch, h, case):
         original = h.engine.step
 
         def step(buttons):
+            if h.busy and h.active_tactic and h.active_tactic["selector"] == "local fallback":
+                self.pending_fallback_ticks += 1
             if h.last_action is None or h.controls.get("released"):
                 ends = [e for e in h.store.events if e["type"] == "tactic_outcome"]
                 reason = ends[-1]["outcome"]["end_reason"] if ends else "before_first_option"
@@ -36,6 +39,8 @@ def test_idle_causes(play):
         "ticks",
         run.harness.sim_ticks,
     )
+    assert sum(recorder.counts.values()) <= run.harness.sim_ticks * 0.10
+    assert recorder.pending_fallback_ticks > 0
     print(
         "RESPONSES",
         dict(

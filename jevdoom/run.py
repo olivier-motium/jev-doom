@@ -37,6 +37,7 @@ from jevdoom.core.tactics import (
     MODES,
     build_menu,
     closing_projectile,
+    fixed_select,
     tactic_questions,
     measure,
 )
@@ -725,6 +726,60 @@ class Run:
         if projectile_id:
             self.decision_projectiles.add(projectile_id)
 
+    def start_option(self, job, picks, selected, selector):
+        option = copy.deepcopy(
+            next(t for t in job["state"]["tactic_candidates"] if t["id"] == selected)
+        )
+        if picks.get("dodge") in (
+            "left",
+            "right",
+            "back_left",
+            "back_right",
+            "carry_on",
+        ):
+            option["controls"]["dodge"] = picks["dodge"]
+        if picks.get("fire") == "hold":
+            option["controls"]["trigger"] = "hold_fire"
+        subject = option["subject"]
+        self.objective = dict(
+            goal={
+                "weapon": "upgrade_weapon",
+                "health": "restore_health",
+                "armor": "add_armor",
+                "combat": "kill_enemies",
+                "exit": "reach_exit",
+            }.get(option["kind"], option["kind"]),
+            subject=subject,
+            committed_tick=self.observation["tick"],
+            request=job["id"],
+        )
+        # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
+        if option["kind"] == "advance" and subject and subject.get("kind") == "frontier":
+            self.exploration_target = subject["id"]
+        elif option["kind"] == "advance" and subject:
+            self.exploration_target = None
+        snapshot = copy.deepcopy(job["state"])
+        snapshot["objective"] = copy.deepcopy(self.objective)
+        self.last_action = dict(
+            **option["controls"],
+            source_request=job["id"],
+            source_tick=job["state"]["tick"],
+            control_rev=self.control_rev,
+            committed_mono=self.clock(),
+            snapshot=snapshot,
+        )
+        self.active_tactic = dict(
+            option=option,
+            before=copy.deepcopy(self.observation),
+            started_tick=self.sim_ticks,
+            request=job["id"],
+            rubrics=picks,
+            selector=selector,
+            prefetch_requested=False,
+        )
+        self.tactic_decisions += 1
+        self.log("tactic_start", **self.active_tactic)
+
     def accept_reply(self, job, r):
         self.busy = False
         self.pending_billed = False
@@ -874,6 +929,7 @@ class Run:
                 ):
                     # Same option re-selected inside its window: one pending prediction continues against the original before-state.
                     active["request"] = job["id"]
+                    active["selector"] = self.config["controller"]
                     active["rubrics"] = picks
                     self.last_action["committed_mono"] = self.clock()
                     self.last_action["source_request"] = job["id"]
@@ -899,58 +955,7 @@ class Run:
                     self.log("response", record=record)
                     return
                 self.end_tactic("replaced")
-                option = copy.deepcopy(
-                    next(t for t in job["state"]["tactic_candidates"] if t["id"] == selected)
-                )
-                if picks.get("dodge") in (
-                    "left",
-                    "right",
-                    "back_left",
-                    "back_right",
-                    "carry_on",
-                ):
-                    option["controls"]["dodge"] = picks["dodge"]
-                if picks.get("fire") == "hold":
-                    option["controls"]["trigger"] = "hold_fire"
-                subject = option["subject"]
-                self.objective = dict(
-                    goal={
-                        "weapon": "upgrade_weapon",
-                        "health": "restore_health",
-                        "armor": "add_armor",
-                        "combat": "kill_enemies",
-                        "exit": "reach_exit",
-                    }.get(option["kind"], option["kind"]),
-                    subject=subject,
-                    committed_tick=self.observation["tick"],
-                    request=job["id"],
-                )
-                # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
-                if option["kind"] == "advance" and subject and subject.get("kind") == "frontier":
-                    self.exploration_target = subject["id"]
-                elif option["kind"] == "advance" and subject:
-                    self.exploration_target = None
-                snapshot = copy.deepcopy(job["state"])
-                snapshot["objective"] = copy.deepcopy(self.objective)
-                self.last_action = dict(
-                    **option["controls"],
-                    source_request=job["id"],
-                    source_tick=job["state"]["tick"],
-                    control_rev=self.control_rev,
-                    committed_mono=self.clock(),
-                    snapshot=snapshot,
-                )
-                self.active_tactic = dict(
-                    option=option,
-                    before=copy.deepcopy(self.observation),
-                    started_tick=self.sim_ticks,
-                    request=job["id"],
-                    rubrics=picks,
-                    selector=self.config["controller"],
-                    prefetch_requested=False,
-                )
-                self.tactic_decisions += 1
-                self.log("tactic_start", **self.active_tactic)
+                self.start_option(job, picks, selected, self.config["controller"])
                 if self.status == "warming":
                     self.status = "running"
                     self.error = None
@@ -988,11 +993,29 @@ class Run:
             self.result.update(self.episode_costs())
             self.store.write_result(self.result)
 
+    def start_local_fallback(self):
+        state = self.state_for_model()
+        menu, self.omitted_tactics = build_menu(state, self.nav)
+        if not menu:
+            return
+        self.tactic_menu = menu
+        state["tactic_candidates"] = menu
+        selected = fixed_select(menu)
+        job = {"id": f"local-fallback-{self.sim_ticks}", "state": state}
+        questions = tactic_questions(menu, state)
+        picks = {"tactic": selected}
+        if "dodge" in questions:
+            picks["dodge"] = "carry_on"
+        if "fire" in questions:
+            picks["fire"] = "hold"
+        self.start_option(job, picks, selected, "local fallback")
+        self.log("local_fallback", tick=self.sim_ticks, option=selected)
+
     def motor(self):
         values = [0] * len(BUTTONS)
         a = self.last_action
         p = self.observation.get("player", {})
-        if self.status != "running" or not a:
+        if self.status != "running":
             return values
         if (
             self.active_tactic
@@ -1005,7 +1028,15 @@ class Run:
                 "released": True,
                 "reason": "Tactic execution window expired; await fresh decision",
             }
-            return values
+            self.start_local_fallback()
+            a = self.last_action
+            if not a:
+                return values
+        if not a:
+            self.start_local_fallback()
+            a = self.last_action
+            if not a:
+                return values
         p = copy.copy(p)
         p.update(
             x=self.engine.variable("POSITION_X"),
