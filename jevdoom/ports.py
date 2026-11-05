@@ -47,15 +47,17 @@ class Decider(Protocol):
 
 
 class Store(Protocol):
-    def load_ledger(self) -> dict: ...
+    def load_ledger(self) -> dict | None: ...
     def save_ledger(self, ledger: dict) -> None: ...
-    def open_run(self, revision: str) -> None: ...
+    def open_run(self, revision: str) -> Any: ...
     def append_trace(self, event: dict) -> None: ...
+    def append_probe(self, record: dict) -> None: ...
     def write_result(self, result: dict) -> None: ...
 
 
 class View(Protocol):
     def publish(self, snapshot: dict, frame: bytes, tick: int) -> None: ...
+    def read(self) -> tuple[dict, bytes, int] | None: ...
 
 
 Clock = Callable[[], float]
@@ -64,8 +66,8 @@ Clock = Callable[[], float]
 def end_reason(step: Step) -> str | None:
     if step.dead:
         return "dead"
-    if step.finished:
-        if step.timeout:
-            return "engine_timeout"
-        return "level_complete" if step.level_done else "episode_ended_unverified"
-    return None
+    if not step.terminal:
+        return None
+    if step.timeout:
+        return "engine_timeout"
+    return "level_complete" if step.level_done else "episode_ended_unverified"

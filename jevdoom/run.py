@@ -1175,11 +1175,10 @@ class Run:
                             self.intervention_ticks += 1
                         step = self.engine.step(buttons)
                         self.sim_ticks += 1
-                        if step.finished:
+                        if step.terminal:
+                            if step.dead and not step.finished:
+                                self.capture()
                             self.finish(end_reason(step))
-                        elif step.dead:
-                            self.capture()
-                            self.finish("dead")
                         elif self.sim_ticks / 35 >= self.max_seconds:
                             self.capture()
                             self.finish("duration_limit")
@@ -1203,11 +1202,10 @@ class Run:
                         step = self.engine.step([0] * len(BUTTONS))
                         self.sim_ticks += 1
                         self.free_run_ticks += 1
-                        if step.finished:
+                        if step.terminal:
+                            if step.dead and not step.finished:
+                                self.capture()
                             self.finish(end_reason(step))
-                        elif step.dead:
-                            self.capture()
-                            self.finish("dead")
                         elif self.sim_ticks / 35 >= self.max_seconds:
                             self.capture()
                             self.finish("duration_limit")

@@ -75,3 +75,12 @@ def test_frame_is_owned_and_step_reports_death(monkeypatch):
     assert step.terminal and step.dead
     assert end_reason(step) == "dead"
     engine.close()
+
+
+def test_terminal_reason_uses_the_step_contract():
+    from jevdoom.ports import Step
+
+    assert end_reason(Step(None, True, False, True, 0, False)) == "engine_timeout"
+    assert end_reason(Step(None, True, False, False, 1, True)) == "level_complete"
+    assert end_reason(Step(None, True, False, False, 0, False)) == "episode_ended_unverified"
+    assert end_reason(Step(None, False, False, False, 0, False)) is None
