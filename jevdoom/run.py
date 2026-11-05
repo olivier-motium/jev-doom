@@ -36,6 +36,7 @@ from jevdoom.core.catalog import (
 from jevdoom.core.tactics import (
     MODES,
     build_menu,
+    closing_projectile,
     tactic_questions,
     measure,
 )
@@ -176,6 +177,10 @@ class Run:
         self.sim_ticks = 0
         self.start_wall = self.clock()
         self.last_dispatch = 0
+        self.decision_tick = -105
+        self.decision_health = 100
+        self.decision_enemies = set()
+        self.decision_projectiles = set()
         self.last_nav = 0
         self.distance = 0
         self.last_position = None
@@ -522,10 +527,38 @@ class Run:
             lost = option["kind"] == "combat" and not any(
                 e["id"] == target["id"] for e in self.observation["enemies"]
             )
-            if arrived or lost:
-                self.end_tactic("completed" if arrived else "target_no_longer_visible")
+            complete = False
+            unavailable = False
+            if self.sim_ticks % 14 == 0:
+                outcome = measure(
+                    option,
+                    self.active_tactic["before"],
+                    self.observation,
+                    self.nav,
+                    "checking",
+                    (self.sim_ticks - self.active_tactic["started_tick"]) / 35,
+                )
+                complete = outcome["prediction_status"] == "met"
+                menu, _ = build_menu(self.state_for_model(), self.nav)
+                unavailable = option["id"] not in {candidate["id"] for candidate in menu}
+            stuck = (
+                self.observation["progress"]["stuck"]
+                and option["controls"]["move"] == "destination"
+            )
+            if arrived or lost or complete or unavailable or stuck:
+                reason = (
+                    "completed"
+                    if arrived or complete
+                    else "target_no_longer_visible"
+                    if lost
+                    else "blocked"
+                    if stuck
+                    else "unavailable"
+                )
+                self.end_tactic(reason)
                 self.last_action = None
-                self.control_rev += 1
+                if reason != "completed":
+                    self.control_rev += 1
                 self.objective = None
         self.observation["survival"] = dict(
             stationary_seconds=round((self.sim_ticks - self.stationary_since) / 35, 2),
@@ -633,6 +666,17 @@ class Run:
         now = self.clock()
         if now - self.last_dispatch < 0.12:
             return
+        enemies = {e["id"] for e in self.observation.get("enemies", [])}
+        projectile = closing_projectile(self.observation)
+        projectile_id = projectile.get("id") if projectile else None
+        if self.last_action and not (
+            enemies - self.decision_enemies
+            or self.decision_health - self.observation["player"]["health"] >= 10
+            or self.sim_ticks - self.decision_tick >= 105
+            or (projectile_id and projectile_id not in self.decision_projectiles)
+            or (self.active_tactic and not self.active_tactic.get("prefetch_requested"))
+        ):
+            return
         phase = "tactic"
         state = self.state_for_model()
         self.tactic_menu, self.omitted_tactics = build_menu(state, self.nav)
@@ -667,6 +711,13 @@ class Run:
         self.busy = True
         self.pending_billed = self.config["controller"] != "local"
         self.last_dispatch = now
+        if self.active_tactic:
+            self.active_tactic["prefetch_requested"] = True
+        self.decision_tick = self.sim_ticks
+        self.decision_health = self.observation["player"]["health"]
+        self.decision_enemies = enemies
+        if projectile_id:
+            self.decision_projectiles.add(projectile_id)
 
     def accept_reply(self, job, r):
         self.busy = False
@@ -684,6 +735,7 @@ class Run:
             tick=job["state"].get("tick", 0),
             at=utc(),
             snapshot_age_seconds=round(age, 3),
+            decision_age_ticks=max(0, self.sim_ticks - job["state"].get("tick", 0)),
             questions=job["questions"],
             response=r,
             accepted=False,
@@ -788,124 +840,135 @@ class Run:
             record["override_reasons"].append(
                 "Order or objective expired while request in flight; request fresh state"
             )
+            self.decision_tick = self.sim_ticks - 105
         else:
             try:
                 self.validate_answers(job, r)
                 answers = r["answers"]
-                if age > 2 and self.status == "running":
-                    record["override_reasons"].append("Snapshot older than2seconds; discarded")
-                else:
-                    picks = {k: a["choice"] for k, a in answers.items()}
-                    selected = picks["tactic"]
-                    active = self.active_tactic
-                    if (
-                        active
-                        and self.last_action is not None
-                        and self.status == "running"
-                        and active["option"]["id"] == selected
-                        and (self.sim_ticks - active["started_tick"]) / 35
-                        < active["option"]["expiry_seconds"]
-                    ):
-                        # Same option re-selected inside its window: one pending prediction continues against the original before-state.
-                        active["request"] = job["id"]
-                        active["rubrics"] = picks
-                        self.last_action["committed_mono"] = self.clock()
-                        self.last_action["source_request"] = job["id"]
-                        self.tactic_continuations += 1
-                        self.log(
-                            "tactic_continue",
-                            request=job["id"],
-                            tactic=selected,
-                            started_tick=active["started_tick"],
-                            game_tick=self.sim_ticks,
-                        )
-                        record["accepted"] = True
-                        record["composed_intent"] = {
-                            k: v
-                            for k, v in self.last_action.items()
-                            if k not in ("snapshot", "committed_mono")
-                        }
-                        self.records.append(record)
-                        self.log("response", record=record)
-                        return
-                    self.end_tactic("replaced")
-                    option = copy.deepcopy(
-                        next(t for t in job["state"]["tactic_candidates"] if t["id"] == selected)
+                picks = {k: a["choice"] for k, a in answers.items()}
+                selected = picks["tactic"]
+                current_menu, self.omitted_tactics = build_menu(self.state_for_model(), self.nav)
+                self.tactic_menu = current_menu
+                if selected not in {option["id"] for option in current_menu}:
+                    record["override_reasons"].append(
+                        "Selected option is no longer in the current menu"
                     )
-                    if picks.get("dodge") in (
-                        "left",
-                        "right",
-                        "back_left",
-                        "back_right",
-                        "carry_on",
-                    ):
-                        option["controls"]["dodge"] = picks["dodge"]
-                    subject = option["subject"]
-                    self.objective = dict(
-                        goal={
-                            "weapon": "upgrade_weapon",
-                            "health": "restore_health",
-                            "armor": "add_armor",
-                            "combat": "kill_enemies",
-                            "exit": "reach_exit",
-                        }.get(option["kind"], option["kind"]),
-                        subject=subject,
-                        committed_tick=self.observation["tick"],
+                    self.decision_tick = self.sim_ticks - 105
+                    self.records.append(record)
+                    self.log("response", record=record)
+                    return
+                active = self.active_tactic
+                if (
+                    active
+                    and self.last_action is not None
+                    and self.status == "running"
+                    and active["option"]["id"] == selected
+                    and (self.sim_ticks - active["started_tick"]) / 35
+                    < active["option"]["expiry_seconds"]
+                ):
+                    # Same option re-selected inside its window: one pending prediction continues against the original before-state.
+                    active["request"] = job["id"]
+                    active["rubrics"] = picks
+                    self.last_action["committed_mono"] = self.clock()
+                    self.last_action["source_request"] = job["id"]
+                    if "dodge" in picks:
+                        self.last_action["dodge"] = picks["dodge"]
+                    if picks.get("fire") == "hold":
+                        self.last_action["trigger"] = "hold_fire"
+                    self.tactic_continuations += 1
+                    self.log(
+                        "tactic_continue",
                         request=job["id"],
+                        tactic=selected,
+                        started_tick=active["started_tick"],
+                        game_tick=self.sim_ticks,
                     )
-                    # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
-                    if (
-                        option["kind"] == "advance"
-                        and subject
-                        and subject.get("kind") == "frontier"
-                    ):
-                        self.exploration_target = subject["id"]
-                    elif option["kind"] == "advance" and subject:
-                        self.exploration_target = None
-                    snapshot = copy.deepcopy(job["state"])
-                    snapshot["objective"] = copy.deepcopy(self.objective)
-                    self.last_action = dict(
-                        **option["controls"],
-                        source_request=job["id"],
-                        source_tick=job["state"]["tick"],
-                        control_rev=self.control_rev,
-                        committed_mono=self.clock(),
-                        snapshot=snapshot,
-                    )
-                    self.active_tactic = dict(
-                        option=option,
-                        before=copy.deepcopy(self.observation),
-                        started_tick=self.sim_ticks,
-                        request=job["id"],
-                        rubrics=picks,
-                        selector=self.config["controller"],
-                    )
-                    self.tactic_decisions += 1
-                    self.log("tactic_start", **self.active_tactic)
-                    if self.status == "warming":
-                        self.status = "running"
-                        self.error = None
-                        if not self.started_play:
-                            self.start_wall = self.clock()
-                            self.started_play = True
-                        if self.pause_started is not None:
-                            elapsed = self.clock() - self.pause_started
-                            self.paused_seconds += elapsed
-                            self.pause_started = None
-                            self.log(
-                                "simulation_resumed",
-                                pause_seconds=round(elapsed, 3),
-                                game_tick=self.observation["tick"],
-                            )
-                        self.recovery_attempts = 0
                     record["accepted"] = True
-                    record["composed_intent"] = copy.deepcopy(
-                        {
-                            k: v
-                            for k, v in self.last_action.items()
-                            if k not in ("snapshot", "committed_mono")
-                        }
-                    )
+                    record["composed_intent"] = {
+                        k: v
+                        for k, v in self.last_action.items()
+                        if k not in ("snapshot", "committed_mono")
+                    }
+                    self.records.append(record)
+                    self.log("response", record=record)
+                    return
+                self.end_tactic("replaced")
+                option = copy.deepcopy(
+                    next(t for t in job["state"]["tactic_candidates"] if t["id"] == selected)
+                )
+                if picks.get("dodge") in (
+                    "left",
+                    "right",
+                    "back_left",
+                    "back_right",
+                    "carry_on",
+                ):
+                    option["controls"]["dodge"] = picks["dodge"]
+                if picks.get("fire") == "hold":
+                    option["controls"]["trigger"] = "hold_fire"
+                subject = option["subject"]
+                self.objective = dict(
+                    goal={
+                        "weapon": "upgrade_weapon",
+                        "health": "restore_health",
+                        "armor": "add_armor",
+                        "combat": "kill_enemies",
+                        "exit": "reach_exit",
+                    }.get(option["kind"], option["kind"]),
+                    subject=subject,
+                    committed_tick=self.observation["tick"],
+                    request=job["id"],
+                )
+                # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
+                if option["kind"] == "advance" and subject and subject.get("kind") == "frontier":
+                    self.exploration_target = subject["id"]
+                elif option["kind"] == "advance" and subject:
+                    self.exploration_target = None
+                snapshot = copy.deepcopy(job["state"])
+                snapshot["objective"] = copy.deepcopy(self.objective)
+                self.last_action = dict(
+                    **option["controls"],
+                    source_request=job["id"],
+                    source_tick=job["state"]["tick"],
+                    control_rev=self.control_rev,
+                    committed_mono=self.clock(),
+                    snapshot=snapshot,
+                )
+                self.active_tactic = dict(
+                    option=option,
+                    before=copy.deepcopy(self.observation),
+                    started_tick=self.sim_ticks,
+                    request=job["id"],
+                    rubrics=picks,
+                    selector=self.config["controller"],
+                    prefetch_requested=False,
+                )
+                self.tactic_decisions += 1
+                self.log("tactic_start", **self.active_tactic)
+                if self.status == "warming":
+                    self.status = "running"
+                    self.error = None
+                    if not self.started_play:
+                        self.start_wall = self.clock()
+                        self.started_play = True
+                    if self.pause_started is not None:
+                        elapsed = self.clock() - self.pause_started
+                        self.paused_seconds += elapsed
+                        self.pause_started = None
+                        self.log(
+                            "simulation_resumed",
+                            pause_seconds=round(elapsed, 3),
+                            game_tick=self.observation["tick"],
+                        )
+                    self.recovery_attempts = 0
+                record["accepted"] = True
+                record["composed_intent"] = copy.deepcopy(
+                    {
+                        k: v
+                        for k, v in self.last_action.items()
+                        if k not in ("snapshot", "committed_mono")
+                    }
+                )
             except Exception as e:
                 self.error = str(e)
                 self.finish("invalid_answer")
@@ -936,9 +999,6 @@ class Run:
                 "released": True,
                 "reason": "Tactic execution window expired; await fresh decision",
             }
-            return values
-        if self.clock() - a["committed_mono"] > 2:
-            self.controls = dict(released=True, reason="Control lease expired")
             return values
         p = copy.copy(p)
         p.update(
@@ -1112,7 +1172,10 @@ class Run:
                 elif cmd == "orders":
                     self.order = str(args["text"])[:1500]
                     self.order_rev += 1
+                    self.end_tactic("invalidated")
                     self.last_action = None
+                    self.objective = None
+                    self.control_rev += 1
                     self.log("orders", text=self.order, revision=self.order_rev)
             while reply := self.decider.poll():
                 job, response = reply
@@ -1131,41 +1194,9 @@ class Run:
                     attempt=self.recovery_attempts,
                     game_tick=self.observation["tick"],
                 )
-            if self.status == "running" and self.busy and self.clock() - self.last_dispatch > 2:
-                self.status = "waiting_provider"
-                self.end_tactic("invalidated")
-                self.last_action = None
-                self.stall_total += 1
-                self.engine.release()
-                if (
-                    self.pause_started is None
-                    and self.config.get("timing", "real_time") == "pause_assisted"
-                ):
-                    self.pause_started = self.clock()
-                self.controls = {
-                    "released": True,
-                    "reason": "Provider stalled over2seconds; "
-                    + (
-                        "simulation explicitly paused"
-                        if self.config.get("timing", "real_time") == "pause_assisted"
-                        else "controls released, world running"
-                    ),
-                }
-                self.error = (
-                    "Control lease expired while awaiting Jev. "
-                    + (
-                        "Simulation paused until the call settles"
-                        if self.config.get("timing", "real_time") == "pause_assisted"
-                        else "The world runs on with controls released"
-                    )
-                    + ", then fresh state is requested."
-                )
-                self.log(
-                    "provider_stall_pause",
-                    game_tick=self.observation["tick"],
-                    stall=self.stall_total,
-                )
-            if self.status == "running":
+            if self.status == "running" and not (
+                self.busy and self.config.get("timing") == "pause_assisted"
+            ):
                 buttons = self.motor()
                 if self.controls.get("MOVE", {}).get(
                     "model_choice"

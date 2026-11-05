@@ -10,7 +10,7 @@ class LocalDecider:
         pick = fixed_select(job["state"]["tactic_candidates"])
         answers = {}
         for name, question in job["questions"].items():
-            selected = "carry_on" if name == "dodge" else pick
+            selected = {"dodge": "carry_on", "fire": "hold"}.get(name, pick)
             answers[name] = {
                 "type": "choice",
                 "choice": selected,

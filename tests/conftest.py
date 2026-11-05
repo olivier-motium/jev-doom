@@ -62,6 +62,7 @@ class Case:
     ticks: int = 1040  # stop before the first periodic checkpoint (harness.py:795)
     seconds: float = 90
     delay: int = 1  # engine ticks from request to reply; 1 means the next tick
+    controller: str = "semantic_tactics"
     fail: tuple = ()  # request ids answered with a provider timeout
     order_at: int | None = None  # game tick after which the order changes while a call is pending
 
@@ -145,7 +146,7 @@ def fixed_answer(job):
     pick = fixed_select(job["state"]["tactic_candidates"])
     answers = {}
     for key, question in job["questions"].items():
-        choice = "carry_on" if key == "dodge" else pick
+        choice = {"dodge": "carry_on", "fire": "allow"}.get(key, pick)
         probabilities = {option: float(option == choice) for option in question["criteria"]}
         answers[key] = dict(type="choice", choice=choice, probabilities=probabilities)
     return dict(ok=True, answers=answers, cost_usd=0.001, elapsed_ms=50.0)
@@ -160,7 +161,14 @@ class ScriptedJev:
         self.completed = []
 
     def submit(self, job):
-        reply = TIMEOUT_REPLY if job["id"] in self.case.fail else fixed_answer(job)
+        if job["id"] in self.case.fail:
+            reply = TIMEOUT_REPLY
+        elif self.case.controller == "local":
+            from jevdoom.adapters.local import LocalDecider
+
+            reply = LocalDecider().ask(job)
+        else:
+            reply = fixed_answer(job)
         self.pending.append([self.case.delay, job, copy.deepcopy(reply)])
 
     def poll(self, timeout=0):
@@ -276,7 +284,7 @@ def play(monkeypatch):
             seed=case.seed,
             skill=case.skill,
             seconds=case.seconds,
-            controller="semantic_tactics",
+            controller=case.controller,
             provider="gateway",
         )
         h.commands.put(("start", start))

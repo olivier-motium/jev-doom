@@ -56,10 +56,6 @@ def build_menu(state, nav):
         for e in state["items"] + state["remembered"]
         if e["kind"] in ("health", "armor", "ammo", "weapon")
     }
-    no_fire = any(
-        s in state.get("standing_order", "").lower()
-        for s in ("do not fire", "never hold the trigger", "never fire", "don't fire")
-    )
 
     def action(subject=None, face=None, move="destination", use="no_use"):
         target = face or (nearest["id"] if nearest else "path" if subject else "scan_left")
@@ -79,7 +75,7 @@ def build_menu(state, nav):
             face=target,
             move=move,
             dodge="carry_on",
-            trigger="fire" if nearest and target == nearest["id"] and not no_fire else "hold_fire",
+            trigger="fire" if nearest and target == nearest["id"] else "hold_fire",
             weapon=weapon,
             use=use,
         )
@@ -226,9 +222,9 @@ def build_menu(state, nav):
         pred = prediction or dict(
             kind="route_progress",
             target=subject["id"],
-            expected_decrease_units=min(48, max(8, length * 0.5)),
+            expected_decrease_units=max(8, length - 28),
             before_distance=round(length, 1),
-            text="Reduce remaining geometric route distance or arrive at the subject",
+            text="Reach the selected subject along the observed route",
         )
         controls = action(subject, face, move, use)
         if route_door:
@@ -247,8 +243,8 @@ def build_menu(state, nav):
                 route_units=round(length),
                 exposed_to=exposure,
                 feasibility="Static box-clear path and observed barrels; dynamic danger is estimated, not guaranteed safe",
-                expiry_seconds=1.0,
-                completion="Prediction satisfied, target invalid, newly blocked route, or one game second",
+                expiry_seconds=3.0 if kind in ("combat", "guard", "retreat") else 6.0,
+                completion="Prediction satisfied, target invalid, newly blocked route, or time limit",
             )
         )
 
@@ -402,7 +398,7 @@ def build_menu(state, nav):
                         face="recent_" + threat["id"],
                         move="hold",
                         dodge="carry_on",
-                        trigger="fire" if not no_fire else "hold_fire",
+                        trigger="fire",
                         weapon="keep",
                         use="no_use",
                     ),
@@ -523,7 +519,7 @@ def build_menu(state, nav):
         route_units=0,
         exposed_to=[],
         feasibility="No feasible progress option, or recent unexplained damage, or a contradicted route; stationary observation can still be dangerous",
-        expiry_seconds=0.5,
+        expiry_seconds=1.5,
         completion="New information appears or the observation window expires",
     )
     if len(menu) > 7:
@@ -614,6 +610,11 @@ def tactic_questions(menu, state=None):
     )  # v51: hitscan fact (probe C, runs/investigations/line332-v45/rubric-probe-c-result.json)  # v50: tactic instruction carries two Doom facts and the tiny-pickup definition (probe B, runs/investigations/line332-v45/rubric-probe-b-result.json)
     if dq:
         out["dodge"] = dq
+    if state and state.get("order_revision", 0):
+        out["fire"] = choice(
+            "Given the standing order, may the selected tactic fire when its target is aligned?",
+            {"allow": "Allow firing", "hold": "Do not fire"},
+        )
     return out
 
 

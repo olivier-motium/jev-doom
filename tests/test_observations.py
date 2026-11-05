@@ -5,7 +5,6 @@ from, the Navigator state, and what state_for_model, build_menu, measure, tactic
 validate_answers returned at that moment.
 """
 
-import copy
 import json
 
 import pytest
@@ -47,11 +46,7 @@ def test_decision_functions_repeat_the_recording(path, navigator):
     restore_nav(nav, fixture["nav"])
 
     state = Run.state_for_model(model_context(fixture["harness"]))
-    recorded_state = copy.deepcopy(expected["state"])
-    recorded_state["measurement_context"].pop("lifts")
-    recorded_state.get("survival", {}).pop("escape_guard", None)
-    recorded_state.get("survival", {}).pop("active_escape", None)
-    assert normal(state) == recorded_state
+    assert normal(state) == expected["state"]
     assert "lifts" not in state["measurement_context"]
     assert "escape_guard" not in state.get("survival", {})
 
