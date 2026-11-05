@@ -57,6 +57,10 @@ def create_app(h):
     def index():
         return HTMLResponse((ROOT / "index.html").read_text())
 
+    @app.get("/app.js")
+    def javascript():
+        return Response((ROOT / "app.js").read_text(), media_type="text/javascript")
+
     @app.get("/api/state")
     def state():
         return h.view()
@@ -91,6 +95,8 @@ def create_app(h):
 
     @app.post("/api/{command}")
     async def command(command: str, request: Request):
+        if h.config.get("controller") == "replay":
+            raise HTTPException(409, "Commands are unavailable during replay")
         if command not in (
             "start",
             "stop",
