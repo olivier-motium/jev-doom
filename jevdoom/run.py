@@ -910,6 +910,16 @@ class Run:
                 answers = r["answers"]
                 picks = {k: a["choice"] for k, a in answers.items()}
                 selected = picks["tactic"]
+                record["option"] = copy.deepcopy(
+                    next(
+                        (
+                            option
+                            for option in job["state"]["tactic_candidates"]
+                            if option["id"] == selected
+                        ),
+                        None,
+                    )
+                )
                 current_menu, self.omitted_tactics = build_menu(self.state_for_model(), self.nav)
                 self.tactic_menu = current_menu
                 if selected not in {option["id"] for option in current_menu}:
