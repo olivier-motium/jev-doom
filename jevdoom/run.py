@@ -1070,149 +1070,148 @@ class Run:
         if hasattr(self, "run_dir"):
             self.store.write_result(self.result)
 
+    def tick(self):
+        with self.lock:
+            while not self.commands.empty():
+                cmd, args = self.commands.get()
+                if cmd == "start":
+                    if self.busy or self.status in (
+                        "running",
+                        "warming",
+                        "recovering",
+                        "waiting_provider",
+                    ):
+                        continue
+                    self.begin_run(args)
+                elif cmd == "probe":
+                    self.request_probe(args)
+                elif cmd == "stop":
+                    self.finish("stopped")
+                elif cmd == "pause" and self.status in (
+                    "running",
+                    "warming",
+                    "recovering",
+                    "waiting_provider",
+                ):
+                    self.status = "paused"
+                    self.pause_started = self.clock()
+                    self.last_action = None
+                    self.engine.release()
+                    self.controls = {"released": True, "reason": "paused"}
+                elif cmd == "resume" and self.status == "paused":
+                    self.capture()
+                    self.status = "warming"
+                elif cmd == "orders":
+                    self.order = str(args["text"])[:1500]
+                    self.order_rev += 1
+                    self.last_action = None
+                    self.log("orders", text=self.order, revision=self.order_rev)
+            while reply := self.decider.poll():
+                job, response = reply
+                self.log(
+                    "provider_return",
+                    request=job["id"],
+                    request_episode=job["episode"],
+                    response=response,
+                )
+                self.accept_reply(job, response)
+            if self.status == "recovering" and self.clock() >= self.retry_at:
+                self.capture()
+                self.status = "warming"
+                self.log(
+                    "recovery_request",
+                    attempt=self.recovery_attempts,
+                    game_tick=self.observation["tick"],
+                )
+            if self.status == "running" and self.busy and self.clock() - self.last_dispatch > 2:
+                self.status = "waiting_provider"
+                self.end_tactic("invalidated")
+                self.last_action = None
+                self.stall_total += 1
+                self.engine.release()
+                if (
+                    self.pause_started is None
+                    and self.config.get("timing", "real_time") == "pause_assisted"
+                ):
+                    self.pause_started = self.clock()
+                self.controls = {
+                    "released": True,
+                    "reason": "Provider stalled over2seconds; "
+                    + (
+                        "simulation explicitly paused"
+                        if self.config.get("timing", "real_time") == "pause_assisted"
+                        else "controls released, world running"
+                    ),
+                }
+                self.error = (
+                    "Control lease expired while awaiting Jev. "
+                    + (
+                        "Simulation paused until the call settles"
+                        if self.config.get("timing", "real_time") == "pause_assisted"
+                        else "The world runs on with controls released"
+                    )
+                    + ", then fresh state is requested."
+                )
+                self.log(
+                    "provider_stall_pause",
+                    game_tick=self.observation["tick"],
+                    stall=self.stall_total,
+                )
+            if self.status == "running":
+                buttons = self.motor()
+                if self.controls.get("MOVE", {}).get(
+                    "model_choice"
+                ) == "destination" and self.observation.get("progress", {}).get("stuck"):
+                    self.failed_route_ticks += 1
+                if self.controls.get("overrides"):
+                    self.intervention_ticks += 1
+                step = self.engine.step(buttons)
+                self.sim_ticks += 1
+                if step.terminal:
+                    if step.dead and not step.finished:
+                        self.capture()
+                    self.finish(end_reason(step))
+                elif self.sim_ticks / 35 >= self.max_seconds:
+                    self.capture()
+                    self.finish("duration_limit")
+                elif self.sim_ticks % 2 == 0:
+                    self.capture()
+                    if self.sim_ticks % 14 == 0:
+                        self.log(
+                            "execution",
+                            tick=self.observation["tick"],
+                            player=self.observation["player"],
+                            controls=self.controls,
+                            progress=self.observation["progress"],
+                        )
+            elif (
+                self.config.get("timing", "real_time") == "real_time"
+                and self.status in ("recovering", "waiting_provider", "warming")
+                and self.started_play
+                and not self.engine.status().finished
+            ):
+                # Real time: the world runs on with released controls while a decision is awaited; only the assisted timing mode may pause it.
+                step = self.engine.step([0] * len(BUTTONS))
+                self.sim_ticks += 1
+                self.free_run_ticks += 1
+                if step.terminal:
+                    if step.dead and not step.finished:
+                        self.capture()
+                    self.finish(end_reason(step))
+                elif self.sim_ticks / 35 >= self.max_seconds:
+                    self.capture()
+                    self.finish("duration_limit")
+                elif self.sim_ticks % 2 == 0:
+                    self.capture()
+            self.dispatch()
+            self.publish_snapshot()
+
     def engine_loop(self):
         try:
             self.new_game()
             deadline = self.clock()
             while not self.stop_event.is_set():
-                with self.lock:
-                    while not self.commands.empty():
-                        cmd, args = self.commands.get()
-                        if cmd == "start":
-                            if self.busy or self.status in (
-                                "running",
-                                "warming",
-                                "recovering",
-                                "waiting_provider",
-                            ):
-                                continue
-                            self.begin_run(args)
-                        elif cmd == "probe":
-                            self.request_probe(args)
-                        elif cmd == "stop":
-                            self.finish("stopped")
-                        elif cmd == "pause" and self.status in (
-                            "running",
-                            "warming",
-                            "recovering",
-                            "waiting_provider",
-                        ):
-                            self.status = "paused"
-                            self.pause_started = self.clock()
-                            self.last_action = None
-                            self.engine.release()
-                            self.controls = {"released": True, "reason": "paused"}
-                        elif cmd == "resume" and self.status == "paused":
-                            self.capture()
-                            self.status = "warming"
-                        elif cmd == "orders":
-                            self.order = str(args["text"])[:1500]
-                            self.order_rev += 1
-                            self.last_action = None
-                            self.log("orders", text=self.order, revision=self.order_rev)
-                    while reply := self.decider.poll():
-                        job, response = reply
-                        self.log(
-                            "provider_return",
-                            request=job["id"],
-                            request_episode=job["episode"],
-                            response=response,
-                        )
-                        self.accept_reply(job, response)
-                    if self.status == "recovering" and self.clock() >= self.retry_at:
-                        self.capture()
-                        self.status = "warming"
-                        self.log(
-                            "recovery_request",
-                            attempt=self.recovery_attempts,
-                            game_tick=self.observation["tick"],
-                        )
-                    if (
-                        self.status == "running"
-                        and self.busy
-                        and self.clock() - self.last_dispatch > 2
-                    ):
-                        self.status = "waiting_provider"
-                        self.end_tactic("invalidated")
-                        self.last_action = None
-                        self.stall_total += 1
-                        self.engine.release()
-                        if (
-                            self.pause_started is None
-                            and self.config.get("timing", "real_time") == "pause_assisted"
-                        ):
-                            self.pause_started = self.clock()
-                        self.controls = {
-                            "released": True,
-                            "reason": "Provider stalled over2seconds; "
-                            + (
-                                "simulation explicitly paused"
-                                if self.config.get("timing", "real_time") == "pause_assisted"
-                                else "controls released, world running"
-                            ),
-                        }
-                        self.error = (
-                            "Control lease expired while awaiting Jev. "
-                            + (
-                                "Simulation paused until the call settles"
-                                if self.config.get("timing", "real_time") == "pause_assisted"
-                                else "The world runs on with controls released"
-                            )
-                            + ", then fresh state is requested."
-                        )
-                        self.log(
-                            "provider_stall_pause",
-                            game_tick=self.observation["tick"],
-                            stall=self.stall_total,
-                        )
-                    if self.status == "running":
-                        buttons = self.motor()
-                        if self.controls.get("MOVE", {}).get(
-                            "model_choice"
-                        ) == "destination" and self.observation.get("progress", {}).get("stuck"):
-                            self.failed_route_ticks += 1
-                        if self.controls.get("overrides"):
-                            self.intervention_ticks += 1
-                        step = self.engine.step(buttons)
-                        self.sim_ticks += 1
-                        if step.terminal:
-                            if step.dead and not step.finished:
-                                self.capture()
-                            self.finish(end_reason(step))
-                        elif self.sim_ticks / 35 >= self.max_seconds:
-                            self.capture()
-                            self.finish("duration_limit")
-                        elif self.sim_ticks % 2 == 0:
-                            self.capture()
-                            if self.sim_ticks % 14 == 0:
-                                self.log(
-                                    "execution",
-                                    tick=self.observation["tick"],
-                                    player=self.observation["player"],
-                                    controls=self.controls,
-                                    progress=self.observation["progress"],
-                                )
-                    elif (
-                        self.config.get("timing", "real_time") == "real_time"
-                        and self.status in ("recovering", "waiting_provider", "warming")
-                        and self.started_play
-                        and not self.engine.status().finished
-                    ):
-                        # Real time: the world runs on with released controls while a decision is awaited; only the assisted timing mode may pause it.
-                        step = self.engine.step([0] * len(BUTTONS))
-                        self.sim_ticks += 1
-                        self.free_run_ticks += 1
-                        if step.terminal:
-                            if step.dead and not step.finished:
-                                self.capture()
-                            self.finish(end_reason(step))
-                        elif self.sim_ticks / 35 >= self.max_seconds:
-                            self.capture()
-                            self.finish("duration_limit")
-                        elif self.sim_ticks % 2 == 0:
-                            self.capture()
-                    self.dispatch()
-                    self.publish_snapshot()
+                self.tick()
                 deadline += 1 / 35
                 self.sleep(max(0, deadline - self.clock()))
                 if deadline < self.clock() - 0.2:
