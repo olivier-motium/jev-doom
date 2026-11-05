@@ -25,7 +25,7 @@ def navigator():
 
     def get(map_name):
         if map_name not in built:
-            built[map_name] = Navigator(WAD, map_name, observable=True)
+            built[map_name] = Navigator(WAD, map_name)
         return built[map_name]
 
     return get

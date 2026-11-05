@@ -128,10 +128,6 @@ async def command(command: str, request: Request):
             raise HTTPException(400, "Choose MAP01 or MAP02")
         if not isinstance(args.get("revision", ""), str):
             raise HTTPException(400, "Invalid revision")
-        if not isinstance(args.get("assists", []), list) or any(
-            not isinstance(x, str) for x in args.get("assists", [])
-        ):
-            raise HTTPException(400, "Invalid assists")
     if command == "orders":
         if not isinstance(args.get("text"), str):
             raise HTTPException(400, "Order text is required")

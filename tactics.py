@@ -2,7 +2,7 @@
 
 import math
 from shapely.geometry import LineString
-from navigation import dist, MANUAL_DOORS, line_kind
+from navigation import dist
 
 MODES = ("channels", "semantic_tactics", "fixed_tactics")
 
@@ -86,18 +86,13 @@ def build_menu(state, nav):
 
     menu = []
     omitted = []
-    observable = getattr(nav, "observable", False)
     known_open = set(state.get("completed_door_approaches", []))
-    # Observable mode reads no WAD special or tag: a door on the route is a seen piece whose visible texture reads as a door and which is not seen open now.
-    doors = (
-        [
-            dict(id=v["id"], a=v["a"], b=v["b"])
-            for v in nav.observed_lines.values()
-            if v["kind"] == "door" and v["spans"] and v.get("open_tick") is None
-        ]
-        if observable
-        else [line for line in nav.lines if line["special"] in MANUAL_DOORS]
-    )
+    # No WAD special or tag is read: a door on the route is a seen piece whose visible texture reads as a door and which is not seen open now.
+    doors = [
+        dict(id=v["id"], a=v["a"], b=v["b"])
+        for v in nav.observed_lines.values()
+        if v["kind"] == "door" and v["spans"] and v.get("open_tick") is None
+    ]
 
     def add(
         id,
@@ -196,7 +191,6 @@ def build_menu(state, nav):
         if (
             subject
             and subject["kind"] == "door_or_switch"
-            and observable
             and subject.get("open")
             and subject.get("line_a")
         ):
@@ -209,7 +203,7 @@ def build_menu(state, nav):
                 text="The player crosses the seen door line while it is open",
             )
             face = "path"
-        elif subject and subject["kind"] == "door_or_switch" and use == "use" and observable:
+        elif subject and subject["kind"] == "door_or_switch" and use == "use":
             ok = (nav.observed_lines.get(subject["id"]) or {}).get("kind")
             if ok == "door":
                 prediction = dict(
@@ -229,38 +223,6 @@ def build_menu(state, nav):
                     target=subject["id"],
                     text="No observable effect is exposed for this face; outcome stays unknown until seen",
                 )
-        elif subject and subject["kind"] == "door_or_switch" and use == "use":
-            line = next(
-                (candidate for candidate in nav.lines if candidate["id"] == subject["id"]), None
-            )
-            lk = line_kind(line["special"]) if line else "switch"
-            if lk == "door":
-                prediction = dict(
-                    kind="door",
-                    target=subject["id"],
-                    text="Native opening height reaches56units or doorway becomes passable",
-                )
-            elif lk == "lift_switch":
-                sec = next(
-                    (s for s in nav.lift_sectors if nav.raw_sectors[s][6] == line["tag"]), None
-                )
-                prediction = dict(
-                    kind="lift",
-                    target=subject["id"],
-                    sector=sec,
-                    text="The tagged lift floor changes or reaches its low position; unknown when the lift is not observed",
-                )
-            elif lk == "exit_switch":
-                prediction = dict(
-                    kind="exit",
-                    text="Native level-exit reward1; otherwise record approach distance",
-                )
-            else:
-                prediction = dict(
-                    kind="switch",
-                    target=subject["id"],
-                    text="No observable effect is exposed for this line; outcome stays unknown",
-                )
         pred = prediction or dict(
             kind="route_progress",
             target=subject["id"],
@@ -271,13 +233,6 @@ def build_menu(state, nav):
         controls = action(subject, face, move, use)
         if route_door:
             controls["use_target"] = route_door[1]["id"]
-        lift_on_route = (
-            None
-            if observable
-            else next(
-                (nav.sector_at(q) for q in path if nav.sector_at(q) in nav.lift_sectors), None
-            )
-        )
         menu.append(
             dict(
                 id=id,
@@ -286,7 +241,7 @@ def build_menu(state, nav):
                 subject=subject,
                 controls=controls,
                 door_on_route=route_door[1]["id"] if route_door else None,
-                lift_on_route=lift_on_route,
+                lift_on_route=None,
                 prediction=pred,
                 priority=priority,
                 route_units=round(length),
@@ -398,17 +353,10 @@ def build_menu(state, nav):
             "Clear the nearest visible threat before crossing",
             "combat",
             nearest,
-            prediction=(
-                dict(
-                    kind="target_gone",
-                    target=nearest["id"],
-                    text="The faced target leaves the view while faced; leaving view is not a confirmed kill",
-                )
-                if state.get("mode", "observable") == "observable"
-                else dict(
-                    kind="hits",
-                    text="Increase native hit or damage counter; disappearance alone is not a confirmed kill",
-                )
+            prediction=dict(
+                kind="target_gone",
+                target=nearest["id"],
+                text="The faced target leaves the view while faced; leaving view is not a confirmed kill",
             ),
             priority=3 if nearest["distance"] < 500 else 12,
             needs_path=False,
@@ -432,7 +380,7 @@ def build_menu(state, nav):
                 priority=1 if p["health"] <= 30 else 15,
                 needs_path=False,
             )
-    elif observable:
+    else:
         # No enemy in view but one remembered close and recent: hold facing where it was last seen, ready to fire when it shows (fire lands only on a visible, aligned target).
         threat = min(
             (
@@ -479,66 +427,18 @@ def build_menu(state, nav):
     ]
     lines = [e for e in advance if e["kind"] == "door_or_switch"]
     fronts = [e for e in advance if e["kind"] == "frontier"]
-    # A line counts as used when any line acting on the same target was pulsed: same lift tag, or same door sector.
-    by_id = {} if observable else {line["id"]: line for line in nav.lines}
-    used_tags = {
-        by_id[i]["tag"] for i, n in nav.used.items() if n and i in by_id and by_id[i]["tag"]
-    }
-    used_sectors = {
-        sec
-        for i, n in nav.used.items()
-        if n and i in by_id
-        for sec in (by_id[i]["r"], by_id[i]["l"])
-        if sec is not None
-    }
 
     def is_used(e):
-        wad_line = by_id.get(e["id"])
-        return bool(e.get("uses")) or (
-            wad_line is not None
-            and (
-                (wad_line["tag"] and wad_line["tag"] in used_tags)
-                or bool({wad_line["r"], wad_line["l"]} & used_sectors)
-            )
-        )
+        return bool(e.get("uses"))
 
     fresh = [e for e in lines if not is_used(e)]
-    used = []
-    # Observable menu order: a door seen open, then seen door/switch/platform faces, then the frontier chosen before an interruption, then frontiers, then wall faces to test, then used lines. A wall test never crowds out the way forward.
-    textured = (
-        [e for e in fresh if e.get("texture_kind") in ("door", "switch", "platform", "exit_sign")]
-        if observable
-        else fresh
-    )
-    wall_tests = [e for e in fresh if e not in textured] if observable else []
-    resume = [e for e in fronts if e["id"] == state.get("exploration_target")] if observable else []
-    lifts = {lift["sector"]: lift for lift in state.get("lifts", [])}
-    for e in [e for e in lines if is_used(e)]:
-        wad_line = by_id.get(e["id"])
-        target = (
-            None
-            if observable
-            else next(
-                (
-                    sec
-                    for sec in nav.lift_sectors
-                    if wad_line["tag"] and nav.raw_sectors[sec][6] == wad_line["tag"]
-                ),
-                None,
-            )
-            if wad_line is not None
-            else None
-        )
-        lift = lifts.get(target)
-        if lift and lift["state"] in ("down", "moving"):
-            omitted.append(
-                dict(
-                    id="advance_" + e["id"],
-                    reason=f"Lift {lift['id']} already {lift['state']}; route through it instead of pressing again",
-                )
-            )
-            continue
-        used.append(e)
+    used = [e for e in lines if is_used(e)]
+    # Menu order: a door seen open, then seen door/switch/platform faces, then the frontier chosen before an interruption, then frontiers, then wall faces to test, then used lines. A wall test never crowds out the way forward.
+    textured = [
+        e for e in fresh if e.get("texture_kind") in ("door", "switch", "platform", "exit_sign")
+    ]
+    wall_tests = [e for e in fresh if e not in textured]
+    resume = [e for e in fronts if e["id"] == state.get("exploration_target")]
 
     def offer(cands, limit):
         n = 0
@@ -547,7 +447,7 @@ def build_menu(state, nav):
                 continue
             times = e.get("uses") or 0
             tk = e.get("texture_kind")
-            if observable and e["kind"] == "door_or_switch" and tk == "door":
+            if e["kind"] == "door_or_switch" and tk == "door":
                 label = (
                     ("Door %s is seen open now: walk through before it closes" % e["id"])
                     if e.get("open")
@@ -558,7 +458,7 @@ def build_menu(state, nav):
                         % (e["id"], times)
                     )
                 )
-            elif observable and e["kind"] == "door_or_switch" and tk in ("switch", "exit_sign"):
+            elif e["kind"] == "door_or_switch" and tk in ("switch", "exit_sign"):
                 label = (
                     ("Press seen switch face %s; effect unknown until observed" % e["id"])
                     if not times
@@ -567,30 +467,22 @@ def build_menu(state, nav):
                         % (e["id"], times)
                     )
                 )
-            elif observable and e["kind"] == "door_or_switch" and tk == "platform":
+            elif e["kind"] == "door_or_switch" and tk == "platform":
                 label = (
                     "Press seen platform face %s; effect known only if the moving floor is in view"
                     % e["id"]
                 ) + (" (%d presses)" % times if times else "")
-            elif observable and e["kind"] == "door_or_switch":
+            elif e["kind"] == "door_or_switch":
                 label = (
                     "Test seen wall face %s with USE for a hidden door or switch" % e["id"]
                 ) + (" (%d presses, nothing seen)" % times if times else "")
-            elif (
-                observable
-                and e["kind"] == "frontier"
-                and e["id"] == state.get("exploration_target")
-            ):
+            elif e["kind"] == "frontier" and e["id"] == state.get("exploration_target"):
                 label = (
                     "Resume exploring toward %s, the frontier chosen before the interruption"
                     % e["id"]
                 )
             else:
-                label = (
-                    "Already activated %d times, press again only if it reverted: " % times
-                    if e["kind"] == "door_or_switch" and is_used(e)
-                    else "Open the route and advance to "
-                ) + e["id"]
+                label = "Open the route and advance to " + e["id"]
             k = len(menu)
             add(
                 "advance_" + e["id"],
@@ -665,14 +557,13 @@ def build_menu(state, nav):
                 reason="Fresh usable state and feasible progress; no unresolved information need, or repeated empty observations",
             )
         )
-    # Observable mode: activating a seen switch, door or exit face is the selected option's own intent; the motor pulses USE only when that face is within reach.
-    if state.get("mode", "observable") == "observable":
-        for t_ in menu:
-            if t_["kind"] == "exit" or (t_.get("subject") or {}).get("kind") in (
-                "exit",
-                "door_or_switch",
-            ):
-                t_["controls"]["use"] = "use"
+    # Activating a seen switch, door or exit face is the selected option's own intent; the motor pulses USE only when that face is within reach.
+    for t_ in menu:
+        if t_["kind"] == "exit" or (t_.get("subject") or {}).get("kind") in (
+            "exit",
+            "door_or_switch",
+        ):
+            t_["controls"]["use"] = "use"
     return menu, omitted
 
 
@@ -751,9 +642,6 @@ def measure(option, before, after, nav, reason, elapsed):
             or dist([p["x"], p["y"]], [subject["x"], subject["y"]]) < 28
         )
         unknown = remaining is None
-    elif pred["kind"] == "hits":
-        metric = dict(hits=p["hits"] - bp["hits"], damage=p["damage_dealt"] - bp["damage_dealt"])
-        passed = metric["hits"] > 0 or metric["damage"] > 0
     elif pred["kind"] == "target_gone":
         before_ids = {e["id"] for e in before.get("enemies", [])}
         after_ids = {e["id"] for e in after.get("enemies", [])}
@@ -813,20 +701,6 @@ def measure(option, before, after, nav, reason, elapsed):
 
         metric = dict(side_before=round(side(bp)), side_after=round(side(p)))
         passed = side(bp) * side(p) < 0
-    elif pred["kind"] == "lift":
-        b = next(
-            (lift for lift in before.get("lifts", []) if lift["sector"] == pred.get("sector")), None
-        )
-        a = next(
-            (lift for lift in after.get("lifts", []) if lift["sector"] == pred.get("sector")), None
-        )
-        metric = dict(
-            floor_before=b and b["floor"],
-            floor_after=a and a["floor"],
-            state_after=a and a["state"],
-        )
-        passed = bool(a and b and (a["floor"] != b["floor"] or a["state"] in ("down", "moving")))
-        unknown = a is None or b is None
     elif pred["kind"] == "switch":
         metric = dict(evidence="none exposed")
         unknown = True
@@ -855,11 +729,6 @@ def measure(option, before, after, nav, reason, elapsed):
         health_change=p["health"] - bp["health"],
         armor_change=p["armor"] - bp["armor"],
         hud_loss=(bp["health"] + bp["armor"]) - (p["health"] + p["armor"]),
-        **(
-            {}
-            if getattr(nav, "observable", False)
-            else dict(damage_taken=p.get("damage_taken", 0) - bp.get("damage_taken", 0))
-        ),
         from_tick=before["tick"],
         to_tick=after["tick"],
     )

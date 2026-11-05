@@ -42,9 +42,7 @@ Change `JEV_BUDGET_USD` in `.env` and restart to change the cap. Run traces, rep
 
 ## What this measures
 
-The default **observable** mode sends structured engine observations: visible entity identities and positions, viewed floor cells and wall pieces, and remembered observations with ages. This is **not a pixels-only agent**. Evaluator kill, hit and damage counters are withheld from model state. Code builds legal choices and executes the chosen motors. The rendered map and evaluator statistics are for inspection.
-
-Historical **assisted** mode is available through `/api/start` with `mode: "assisted"`. It uses full static-map navigation and selected scripted tactical assists. It is labelled in run metadata; do not compare it as if it had the same information as observable mode. The dashboard starts observable mode with no tactical assists.
+Jev receives **observable** state as structured engine observations: visible entity identities and positions, viewed floor cells and wall pieces, and remembered observations with ages. This is **not a pixels-only agent**. Evaluator kill, hit and damage counters are withheld from model state. Code builds legal choices and executes the chosen motors. The rendered map and evaluator statistics are for inspection.
 
 The engine runs at 35 Hz. Real-time mode keeps advancing while normal requests are in flight; startup and explicit pause stop it; during provider stalls and recovery, an already-started real-time run continues with released controls. `pause_assisted` timing is a separate API option. Game time and wall time differ. MAP01 and MAP02 are supported; later maps are unvalidated. A terminal episode is not automatically a completed level. This repository makes no level-completion or model-performance claim.
 

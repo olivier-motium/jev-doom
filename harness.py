@@ -17,7 +17,7 @@ from pathlib import Path
 import vizdoom as vzd
 from PIL import Image
 from shapely.geometry import LineString, Point
-from navigation import Navigator, dist, MANUAL_DOORS, line_kind
+from navigation import Navigator, dist
 from tactics import (
     MODES,
     build_menu,
@@ -34,14 +34,6 @@ RESERVE = 0.05
 CAP = float(os.getenv("JEV_BUDGET_USD", "15.00"))
 if not math.isfinite(CAP) or CAP < RESERVE:
     raise ValueError("JEV_BUDGET_USD must be finite and at least 0.05")
-ASSISTS = (
-    "escape_guard",
-    "threat_turn",
-    "cover_seek",
-    "barrel_clearance",
-    "lift_assist",
-    "exit_activation",
-)
 EVALUATOR_FIELDS = (
     "hits",
     "damage_dealt",
@@ -203,14 +195,13 @@ class Harness:
             revision="v64-observable-order",
             mode="observable",
             timing="real_time",
-            assists=[],
             controller="channels",
             start_type="Fresh pistol start",
             provider="Vercel AI Gateway",
             provider_key="gateway",
             model="typesafe-ai/jev",
             budget_usd=CAP,
-            assistance="Observable mode: structured visible entities, seen floor cells and wall pieces, remembered observations; no static-map route access and no tactical assists",
+            assistance="Observable mode: seen floor cells and seen wall pieces only, no static map, no line specials, no lift facts out of view, no tactical assist; execution interlocks of the selected option only (fire when the faced target is visible and aligned, USE when the selected face is in reach, approach facing toward the selected face, the dodge Jev chose)",
         )
         self.ledger_path = RUNS / "budget.json"
         self.ledger = (
@@ -363,11 +354,7 @@ class Harness:
         g.set_map_exit_reward(1)
         g.init()
         g.new_episode()
-        self.nav = Navigator(
-            ROOT / "assets/freedoom2.wad",
-            self.config["map"],
-            observable=self.config.get("mode", "observable") == "observable",
-        )
+        self.nav = Navigator(ROOT / "assets/freedoom2.wad", self.config["map"])
         self.memory = {}
         self.previous_health = 100
         self.last_damage_tick = -1000
@@ -395,30 +382,11 @@ class Harness:
         self.free_run_ticks = 0
         self.continued_from = None
         self.last_checkpoint_tick = 0
-        self.door_observations = {}
         self.use_latches = {}
         self.use_pulses = {}
-        self.lift_observations = {}
-        self.lift_hold = None
-        self.lift_assist_ticks = 0
-        self.lift_calls = 0
-        self.lift_lowers = 0
-        self.threat_turn = None
-        self.threat_turn_ticks = 0
-        self.threat_turns = 0
         self.approach_facing_ticks = 0
         self.prediction_statuses = {}
         self.tactic_continuations = 0
-        self.barrel_clear = None
-        self.barrel_clear_ticks = 0
-        self.barrel_clears = 0
-        self.cover = None
-        self.cover_ticks = 0
-        self.covers = 0
-        self.cover_hold = None
-        self.cover_holding = False
-        self.cover_holds = 0
-        self.cover_hold_logged = None
         if self.investigation is None:
             previous = sorted((RUNS / "investigations").glob("*.json"))
             self.investigation = json.loads(previous[-1].read_text()) if previous else None
@@ -433,9 +401,6 @@ class Harness:
         self.stationary_anchor = None
         self.stationary_since = 0
         self.exploration_target = None
-        self.escape = None
-        self.escape_count = 0
-        self.escape_ticks = 0
         self.control_rev = 0
         self.capture()
         self.status = "ready"
@@ -495,7 +460,6 @@ class Harness:
             order=self.order,
             order_rev=self.order_rev,
         )
-        data["known_exits"] = sorted(self.nav.known_exits)
         tmp = RUNS / "checkpoint.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(RUNS / "checkpoint.json")
@@ -548,32 +512,11 @@ class Harness:
                 return
             self.config["seed"] = seed
             self.config["skill"] = skill
-            mode = args.get("mode", "observable")
             timing = args.get("timing", "real_time")
-            if mode not in ("observable", "assisted"):
-                self.error = "mode must be observable (default) or assisted (historical)"
-                return
             if timing not in ("real_time", "pause_assisted"):
                 self.error = "timing must be real_time (default) or pause_assisted (labelled)"
                 return
-            assists = args.get("assists", [] if mode == "observable" else list(ASSISTS))
-            if not isinstance(assists, list) or not set(assists) <= set(ASSISTS):
-                self.error = "assists must be a list drawn from " + ", ".join(ASSISTS)
-                return
-            if mode == "observable" and assists:
-                self.error = (
-                    "observable mode has no tactical assists; select mode=assisted to use them"
-                )
-                return
-            self.config["mode"] = mode
             self.config["timing"] = timing
-            self.config["assists"] = list(assists)
-            self.config["assistance"] = (
-                "Observable mode: seen floor cells and seen wall pieces only, no static map, no line specials, no lift facts out of view, no tactical assist; execution interlocks of the selected option only (fire when the faced target is visible and aligned, USE when the selected face is in reach, approach facing toward the selected face, the dodge Jev chose)"
-                if mode == "observable"
-                else "Assisted mode (historical): static map navigation plus observed barrels; assists as named: "
-                + ", ".join(assists)
-            )
             parts = []
             if selected_map != "MAP01":
                 parts.append(selected_map)
@@ -590,9 +533,7 @@ class Harness:
                 + ("transfer check" if parts == ["unused seed %d" % seed] else "harder condition")
                 + ")"
             )
-            self.config["start_type"] += (
-                ", observable mode" if mode == "observable" else ", assisted mode (historical)"
-            )
+            self.config["start_type"] += ", observable mode"
             if timing == "pause_assisted":
                 self.config["start_type"] += ", pause-assisted timing"
         self.new_game()
@@ -635,19 +576,8 @@ class Harness:
             self.last_position = None
             self.order = saved["order"]
             self.order_rev = saved["order_rev"]
-            self.nav.known_exits.update(saved.get("known_exits", []))
             self.last_nav = 0
             self.position_history.clear()
-            if "known_exits" not in saved:
-                # Upgrade an older checkpoint from its recorded observations only.
-                prior_trace = Path(saved["source_run"]) / "trace.jsonl"
-                if prior_trace.exists():
-                    for row in prior_trace.read_text().splitlines():
-                        event = json.loads(row)
-                        if event.get("type") == "request":
-                            self.nav.known_exits.update(
-                                e["id"] for e in event["state"]["navigation"] if e["kind"] == "exit"
-                            )
             self.continued_from = dict(
                 source_run=saved["source_run"],
                 at=saved["at"],
@@ -819,7 +749,6 @@ class Harness:
             and self.last_action
             and self.last_action.get("move") == "destination"
             and s.tic - self.last_failed_tick > 105
-            and not self.lift_hold
         ):
             attempted = (self.last_action["snapshot"].get("objective") or {}).get("subject")
             # A USE target counts as failed too when the player stands at its approach point for the window with no pulse landing on it (nothing to press there).
@@ -841,22 +770,19 @@ class Harness:
                     failed_attempts=self.nav.failed[attempted["id"]],
                 )
         if time.monotonic() - self.last_nav > 0.5:
-            if self.nav.observable:
-                depth_map = s.depth_buffer
-                cols = (
-                    [int(depth_map[215:226, c].min()) for c in range(0, depth_map.shape[1], 10)]
-                    if depth_map is not None
-                    else []
-                )
-                self.nav.observe_view(pos, p["facing"], cols, s.tic)
-                for cell in self.nav.frame_seen:
-                    sec = self.nav.obs_cells.get(cell)
-                    if sec is not None:
-                        self.nav.record_heights(
-                            sec, -s.sectors[sec].floor_height, s.sectors[sec].ceiling_height, s.tic
-                        )
-            else:
-                self.nav.observe(pos, s.tic)
+            depth_map = s.depth_buffer
+            cols = (
+                [int(depth_map[215:226, c].min()) for c in range(0, depth_map.shape[1], 10)]
+                if depth_map is not None
+                else []
+            )
+            self.nav.observe_view(pos, p["facing"], cols, s.tic)
+            for cell in self.nav.frame_seen:
+                sec = self.nav.obs_cells.get(cell)
+                if sec is not None:
+                    self.nav.record_heights(
+                        sec, -s.sectors[sec].floor_height, s.sectors[sec].ceiling_height, s.tic
+                    )
             self.last_nav = time.monotonic()
             self.map = self.nav.ui()
             self.nav_candidates = self.nav.candidates(pos)
@@ -872,135 +798,39 @@ class Harness:
                 ],
             ]
         )
-        if self.nav.observable:
-            for lid, v in self.nav.observed_lines.items():
-                if not v["spans"] or v.get("open_tick") is not None:
-                    continue
-                base = LineString([v["a"], v["b"]])
-                hit = None
-                for s0, s1 in v["spans"]:
-                    a_ = base.interpolate(s0, normalized=True)
-                    b_ = base.interpolate(s1, normalized=True)
-                    x_ = ray.intersection(LineString([(a_.x, a_.y), (b_.x, b_.y)]))
-                    if not x_.is_empty:
-                        hit = x_
-                        break
-                if hit is None:
-                    continue
-                closed = lid in self.nav.frame_hits
-                interactions.append(
-                    dict(
-                        id=lid,
-                        kind={
-                            "switch": "switch",
-                            "door": "door",
-                            "platform": "lift_switch",
-                            "exit_sign": "switch",
-                            None: "wall",
-                        }[v["kind"]],
-                        texture_kind=v["kind"] or "wall",
-                        texture=v.get("texture"),
-                        distance=round(Point(pos).distance(hit), 1),
-                        opening_height=None,
-                        door_passable=(not closed) if v["kind"] == "door" else None,
-                        needs_use=closed if v["kind"] == "door" else True,
-                    )
-                )
-        for line in [] if self.nav.observable else self.nav.switches:
-            hit = ray.intersection(LineString([line["a"], line["b"]]))
-            if not hit.is_empty:
-                # ViZDoom1.3.0 reports floor_height with its sign flipped against the WAD (runs/investigations/door-tracer-v29/line167-native-result.json). Doors move ceilings only, so the opening is runtime ceiling minus WAD floor.
-                gap = min(
-                    (
-                        s.sectors[sec].ceiling_height - self.nav.raw_sectors[sec][0]
-                        for sec in (line["r"], line["l"])
-                        if sec is not None
-                    ),
-                    default=None,
-                )
-                kind = line_kind(line["special"])
-                interaction = dict(
-                    id=line["id"],
-                    kind=kind,
+        for lid, v in self.nav.observed_lines.items():
+            if not v["spans"] or v.get("open_tick") is not None:
+                continue
+            base = LineString([v["a"], v["b"]])
+            hit = None
+            for s0, s1 in v["spans"]:
+                a_ = base.interpolate(s0, normalized=True)
+                b_ = base.interpolate(s1, normalized=True)
+                x_ = ray.intersection(LineString([(a_.x, a_.y), (b_.x, b_.y)]))
+                if not x_.is_empty:
+                    hit = x_
+                    break
+            if hit is None:
+                continue
+            closed = lid in self.nav.frame_hits
+            interactions.append(
+                dict(
+                    id=lid,
+                    kind={
+                        "switch": "switch",
+                        "door": "door",
+                        "platform": "lift_switch",
+                        "exit_sign": "switch",
+                        None: "wall",
+                    }[v["kind"]],
+                    texture_kind=v["kind"] or "wall",
+                    texture=v.get("texture"),
                     distance=round(Point(pos).distance(hit), 1),
-                    special=line["special"],
-                    opening_height=round(gap, 1) if kind == "door" and gap is not None else None,
-                    door_passable=(gap >= 56) if kind == "door" and gap is not None else None,
-                    needs_use=kind != "door" or (gap is not None and gap < 56),
+                    opening_height=None,
+                    door_passable=(not closed) if v["kind"] == "door" else None,
+                    needs_use=closed if v["kind"] == "door" else True,
                 )
-                if line["special"] in MANUAL_DOORS and gap is not None:
-                    previous = self.door_observations.get(line["id"], {})
-                    changed_tick = (
-                        s.tic
-                        if previous and gap != previous["opening_height"]
-                        else previous.get("changed_tick", -1000)
-                    )
-                    sector = min(
-                        (sec for sec in (line["r"], line["l"]) if sec is not None),
-                        key=lambda sec: (
-                            s.sectors[sec].ceiling_height - self.nav.raw_sectors[sec][0]
-                        ),
-                    )
-                    interaction.update(
-                        moving=s.tic - changed_tick <= 6, use_group="door_sector_" + str(sector)
-                    )
-                    if previous and previous["passable"] != (gap >= 56):
-                        self.log(
-                            "door_transition",
-                            line=line["id"],
-                            game_tick=s.tic,
-                            opening_height=gap,
-                            passable=gap >= 56,
-                            player=[p["x"], p["y"]],
-                        )
-                    self.door_observations[line["id"]] = dict(
-                        opening_height=gap,
-                        passable=gap >= 56,
-                        changed_tick=changed_tick,
-                        seen_tick=s.tic,
-                    )
-                interactions.append(interaction)
-        lifts = []
-        for sec, info in ({} if self.nav.observable else self.nav.lift_sectors).items():
-            floor = -s.sectors[sec].floor_height
-            previous = self.lift_observations.get(sec)
-            changed_tick = (
-                s.tic
-                if previous is None or previous["floor"] != floor
-                else previous["changed_tick"]
             )
-            self.lift_observations[sec] = dict(floor=floor, changed_tick=changed_tick)
-            state = (
-                "moving"
-                if s.tic - changed_tick <= 6
-                else "down"
-                if abs(floor - info["low"]) <= 4
-                else "up"
-                if abs(floor - info["high"]) <= 4
-                else "between"
-            )
-            centre = (
-                [
-                    sum(self.nav.xy(c)[0] for c in self.nav.by_sector[sec])
-                    / max(1, len(self.nav.by_sector[sec])),
-                    sum(self.nav.xy(c)[1] for c in self.nav.by_sector[sec])
-                    / max(1, len(self.nav.by_sector[sec])),
-                ]
-                if self.nav.by_sector[sec]
-                else pos
-            )
-            if dist(pos, centre) < 640 and not self.nav.walls.intersects(LineString([pos, centre])):
-                lifts.append(
-                    dict(
-                        id="lift_" + str(sec),
-                        sector=sec,
-                        floor=floor,
-                        low=info["low"],
-                        high=info["high"],
-                        state=state,
-                        distance=round(dist(pos, centre)),
-                    )
-                )
         if p["health"] < self.previous_health:
             self.last_damage_tick = s.tic
         depth = s.depth_buffer
@@ -1021,12 +851,6 @@ class Harness:
         priority.extend(
             [e for e in remembered if e["id"] not in kept][: max(0, 18 - len(priority))]
         )
-        completed_doors = {id for id, d in self.door_observations.items() if d["passable"]}
-        navigation = [
-            n
-            for n in self.nav_candidates
-            if n["kind"] != "door_or_switch" or n["id"] not in completed_doors
-        ]
         self.observation = dict(
             sequence=self.seq,
             tick=s.tic,
@@ -1044,12 +868,12 @@ class Harness:
             remembered=priority,
             walls_depth_buffer=walls,
             just_took_damage=s.tic - self.last_damage_tick < 35,
-            navigation=navigation,
-            completed_door_approaches=sorted(completed_doors),
+            navigation=list(self.nav_candidates),
+            completed_door_approaches=[],
             navigation_feedback=self.navigation_feedback,
             interaction_ahead_within_USE_range=interactions,
-            lifts=lifts,
-            lift_assistance=self.lift_hold,
+            lifts=[],
+            lift_assistance=None,
             objective=copy.deepcopy(self.objective),
             previous_controls=self.controls,
             progress=dict(
@@ -1062,26 +886,10 @@ class Harness:
             limits=dict(
                 enemy_health="not exposed",
                 kill_attribution="aggregate engine killcount; victim and player attribution unknown",
-                map_assistance=(
-                    "seen floor cells and seen wall pieces only; frontier candidates at the edge of seen floor; wall faces classified by their visible texture; no static map geometry"
-                    if self.nav.observable
-                    else "static full geometry; discovered frontier candidates; observed barrel collision boxes"
-                ),
+                map_assistance="seen floor cells and seen wall pieces only; frontier candidates at the edge of seen floor; wall faces classified by their visible texture; no static map geometry",
                 keys="not exposed by this adapter",
             ),
         )
-        subject = (self.objective or {}).get("subject") or {}
-        if subject.get("kind") == "door_or_switch" and subject["id"] in completed_doors:
-            self.end_tactic("completed")
-            self.log(
-                "objective_complete",
-                subject=subject,
-                reason="Observed door is passable; interaction approach is complete",
-            )
-            self.objective = None
-            self.last_action = None
-            self.last_goal = -100
-            self.control_rev += 1
         self.previous_health = p["health"]
         if self.active_tactic:
             option = self.active_tactic["option"]
@@ -1102,7 +910,7 @@ class Harness:
         self.observation["survival"] = dict(
             stationary_seconds=round((self.sim_ticks - self.stationary_since) / 35, 2),
             escape_guard="At health30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
-            active_escape=self.escape,
+            active_escape=None,
         )
         buf = io.BytesIO()
         Image.fromarray(s.screen_buffer).save(buf, format="JPEG", quality=82)
@@ -1115,25 +923,14 @@ class Harness:
         state["objective"] = copy.deepcopy(self.objective)
         for k in EVALUATOR_FIELDS:
             state["player"].pop(k, None)
-        observable = self.config.get("mode", "observable") == "observable"
-        state["mode"] = self.config.get("mode", "observable")
+        state["mode"] = "observable"
         state["exploration_target"] = self.exploration_target
         state["recent_tactic_outcomes"] = [
-            {
-                k: v
-                for k, v in o.items()
-                if k != "measured" and not (observable and k == "damage_taken")
-            }
-            for o in list(self.tactic_outcomes)[-5:]
+            {k: v for k, v in o.items() if k != "measured"} for o in list(self.tactic_outcomes)[-5:]
         ]
-        if observable:
-            state["assumptions"] = (
-                "Structured sensing of entities currently in view with exact positions and identities; remembered entities with ages; floor cells and wall pieces only where the view has reached them; wall faces classified by the texture the player sees; heights only for sectors in view; no static map, no line specials, no lift facts out of view. Hit, damage, kill, item and secret counters are evaluator evidence and are not shown; outcome feedback carries HUD health and armor changes only."
-            )
-        else:
-            state["assumptions"] = (
-                "Structured sensing of currently visible entities with exact positions and identities; remembered entities with ages; static map geometry for routes; door and lift states only when in view or line of sight. Hit, damage, kill, item and secret counters are evaluator evidence and are not shown."
-            )
+        state["assumptions"] = (
+            "Structured sensing of entities currently in view with exact positions and identities; remembered entities with ages; floor cells and wall pieces only where the view has reached them; wall faces classified by the texture the player sees; heights only for sectors in view; no static map, no line specials, no lift facts out of view. Hit, damage, kill, item and secret counters are evaluator evidence and are not shown; outcome feedback carries HUD health and armor changes only."
+        )
         state["standing_order"] = self.order
         state["order_revision"] = self.order_rev
         state["measurement_context"] = dict(
@@ -2043,7 +1840,7 @@ class Harness:
         destination = (a["snapshot"].get("objective") or {}).get("subject")
         waypoint = None
         if destination:
-            if self.nav.observable and destination.get("through"):
+            if destination.get("through"):
                 rec = self.nav.observed_lines.get(destination["id"])
                 if rec and rec.get("open_tick") is not None:
                     # The selected door option carries its own walk-through: while the piece is seen open, the route runs to the far side of the doorway.
@@ -2154,243 +1951,10 @@ class Harness:
                     + destination["id"]
                     + " within48units of its approach point"
                 )
-        # Threat-check turn: damage with no enemy in view and a remembered enemy seen within5seconds outside the view; the route continues, aim and fire stay the model's.
-        recent = (
-            [
-                m
-                for m in self.observation.get("remembered", [])
-                if m["kind"] == "enemy" and m["last_seen_seconds"] <= 5
-            ]
-            if self.observation.get("just_took_damage") and not self.observation.get("enemies")
-            else []
-        )
-        turn_target = None
-        if (
-            recent
-            and "threat_turn" in set(self.config.get("assists", []))
-            and (a["face"] in ("path", "hold") or a["face"].startswith("door_"))
-        ):
-            current = next(
-                (m for m in recent if self.threat_turn and m["id"] == self.threat_turn["id"]), None
-            )
-            turn_target = current or min(recent, key=lambda m: m["last_seen_seconds"])
-        if turn_target:
-            face = math.degrees(math.atan2(turn_target["y"] - p["y"], turn_target["x"] - p["x"]))
-            overrides.append(
-                "Threat check: damage with no enemy in view; turning toward last seen "
-                + turn_target["id"]
-            )
-            self.threat_turn_ticks += 1
-            if not self.threat_turn or self.threat_turn["id"] != turn_target["id"]:
-                self.threat_turn = dict(id=turn_target["id"], since=self.sim_ticks)
-                self.threat_turns += 1
-                self.log(
-                    "threat_turn_start",
-                    game_tick=self.sim_ticks,
-                    target=turn_target["id"],
-                    last_seen_seconds=turn_target["last_seen_seconds"],
-                    model_face=a["face"],
-                    player=[round(p["x"], 1), round(p["y"], 1)],
-                )
-        elif self.threat_turn:
-            self.log(
-                "threat_turn_end",
-                game_tick=self.sim_ticks,
-                target=self.threat_turn["id"],
-                ticks=self.sim_ticks - self.threat_turn["since"],
-                enemy_visible=bool(self.observation.get("enemies")),
-            )
-            self.threat_turn = None
         turn = angle(face - p["facing"])
         values[2] = max(-7, min(7, turn))
         # One-tick check after startup: +7delta changes0degrees to353degrees (right).
         values[2] = -values[2]
-        hold = None
-        if (
-            move == "destination"
-            and waypoint
-            and self.nav.lift_sectors
-            and "lift_assist" in set(self.config.get("assists", []))
-        ):
-            here = self.nav.sector_at(pos)
-            there = self.nav.sector_at(waypoint)
-            z = p.get("z", 0)
-            if (
-                there in self.nav.lift_sectors
-                and here != there
-                and there in self.lift_observations
-                and self.lift_observations[there]["floor"] - z > 24
-            ):
-                hold = dict(kind="call", sector=there, floor=self.lift_observations[there]["floor"])
-            elif (
-                here in self.nav.lift_sectors
-                and there != here
-                and there is not None
-                and here in self.lift_observations
-                and self.nav.sectors[there][0] - self.lift_observations[here]["floor"] > 24
-            ):
-                hold = dict(kind="ride", sector=here, floor=self.lift_observations[here]["floor"])
-            elif (
-                here in self.nav.lift_sectors
-                and there != here
-                and there is not None
-                and here in self.lift_observations
-                and self.lift_observations[here]["floor"] - self.nav.sectors[there][0] > 24
-            ):
-                # Lower (v49): the lift is up and the route leaves below it. A switch line on the lift edge is inert from the lift side, so cross the nearest walk-over lowering line of this tag into the neighbour; the route then brings the player back onto the lowering lift.
-                walkovers = [
-                    line
-                    for line in self.nav.lift_lines
-                    if line["special"] in (10, 88, 120, 121) and here in (line["r"], line["l"])
-                ]
-                if walkovers:
-                    walkover = min(
-                        walkovers,
-                        key=lambda line: LineString([line["a"], line["b"]]).distance(Point(pos)),
-                    )
-                    mx, my = (
-                        (walkover["a"][0] + walkover["b"][0]) / 2,
-                        (walkover["a"][1] + walkover["b"][1]) / 2,
-                    )
-                    dx, dy = (
-                        walkover["b"][0] - walkover["a"][0],
-                        walkover["b"][1] - walkover["a"][1],
-                    )
-                    n = math.hypot(dx, dy) or 1
-                    nx, ny = -dy / n, dx / n
-                    side = (p["x"] - mx) * nx + (p["y"] - my) * ny
-                    tx, ty = (
-                        mx - 40 * nx * (1 if side > 0 else -1),
-                        my - 40 * ny * (1 if side > 0 else -1),
-                    )
-                    hold = dict(
-                        kind="lower",
-                        sector=here,
-                        floor=self.lift_observations[here]["floor"],
-                        line=walkover["id"],
-                        target=[round(tx, 1), round(ty, 1)],
-                    )
-        if (hold or {}).get("kind") != (self.lift_hold or {}).get("kind") or (hold or {}).get(
-            "sector"
-        ) != (self.lift_hold or {}).get("sector"):
-            if hold:
-                self.lift_lowers += int(hold["kind"] == "lower")
-                self.log(
-                    "lift_assist_start",
-                    game_tick=self.sim_ticks,
-                    hold=hold,
-                    player=[round(p["x"], 1), round(p["y"], 1), round(p.get("z", 0), 1)],
-                    source_request=a["source_request"],
-                    model_move=a["move"],
-                )
-            elif self.lift_hold:
-                self.log(
-                    "lift_assist_end",
-                    game_tick=self.sim_ticks,
-                    hold=self.lift_hold,
-                    player=[round(p["x"], 1), round(p["y"], 1), round(p.get("z", 0), 1)],
-                )
-            self.lift_hold = hold
-        # Cover-seeking under unseen fire: damage with no enemy in view and a recent remembered enemy; move up to1.5s to the nearest seen cell whose line to every recent remembered position is wall-blocked. Aim, trigger and weapon stay the model's.
-        if self.cover and (
-            self.sim_ticks >= self.cover["until_tick"]
-            or dist(pos, [self.cover["x"], self.cover["y"]]) < 16
-            or self.observation.get("enemies")
-        ):
-            reached_cover = dist(pos, [self.cover["x"], self.cover["y"]]) < 16
-            self.log(
-                "cover_end",
-                game_tick=self.sim_ticks,
-                ticks=self.sim_ticks - self.cover["since"],
-                reached=reached_cover,
-                enemy_visible=bool(self.observation.get("enemies")),
-                player=[round(p["x"], 1), round(p["y"], 1)],
-            )
-            # Cover hold (v52): a reached covered cell is held for the rest of the budget instead of restarting toward a neighbour.
-            self.cover_hold = (
-                dict(x=self.cover["x"], y=self.cover["y"], until_tick=self.cover["until_tick"])
-                if reached_cover and not self.observation.get("enemies")
-                else None
-            )
-            self.cover = None
-        self.cover_holding = False
-        if self.cover_hold and (
-            self.sim_ticks >= self.cover_hold["until_tick"]
-            or self.observation.get("enemies")
-            or not recent
-            or dist(pos, [self.cover_hold["x"], self.cover_hold["y"]]) >= 48
-            or not all(
-                self.nav.walls.intersects(
-                    LineString([[self.cover_hold["x"], self.cover_hold["y"]], [m["x"], m["y"]]])
-                )
-                for m in recent
-            )
-        ):
-            self.log(
-                "cover_hold_end",
-                game_tick=self.sim_ticks,
-                hold=self.cover_hold,
-                player=[round(p["x"], 1), round(p["y"], 1)],
-            )
-            self.cover_hold = None
-        if (
-            self.cover is None
-            and recent
-            and "cover_seek" in set(self.config.get("assists", []))
-            and not self.escape
-            and not hold
-            and move == "destination"
-            and self.cover_hold
-        ):
-            self.cover_holding = True
-            if self.cover_hold_logged != self.cover_hold["until_tick"]:
-                self.cover_hold_logged = self.cover_hold["until_tick"]
-                self.cover_holds += 1
-                self.log(
-                    "cover_hold_start",
-                    game_tick=self.sim_ticks,
-                    hold=self.cover_hold,
-                    threats=[m["id"] for m in recent],
-                    player=[round(p["x"], 1), round(p["y"], 1)],
-                )
-        if (
-            self.cover is None
-            and recent
-            and "cover_seek" in set(self.config.get("assists", []))
-            and not self.escape
-            and not hold
-            and move == "destination"
-            and not self.cover_holding
-        ):
-            spot = self.nav.cover_point(pos, recent)
-            if spot:
-                self.cover = dict(**spot, since=self.sim_ticks, until_tick=self.sim_ticks + 52)
-                self.covers += 1
-                self.log(
-                    "cover_start",
-                    game_tick=self.sim_ticks,
-                    target=spot,
-                    threats=[m["id"] for m in recent],
-                    model_move=a["move"],
-                    player=[round(p["x"], 1), round(p["y"], 1)],
-                )
-        if hold and hold["kind"] == "call":
-            line = min(
-                (line for line in self.nav.lift_lines if hold["sector"] in (line["r"], line["l"])),
-                key=lambda line: LineString([line["a"], line["b"]]).distance(Point(pos)),
-                default=None,
-            )
-            if line:
-                ax, ay = line["a"]
-                bx, by = line["b"]
-                dx, dy = bx - ax, by - ay
-                t = max(0, min(1, ((p["x"] - ax) * dx + (p["y"] - ay) * dy) / (dx * dx + dy * dy)))
-                face = math.degrees(math.atan2(ay + t * dy - p["y"], ax + t * dx - p["x"]))
-                turn = angle(face - p["facing"])
-                values[2] = -max(-7, min(7, turn))
-            overrides.append(
-                "Lift assistance: waiting at the edge and calling the lift on the committed route"
-            )
         if move == "destination" and waypoint:
             d = dist(pos, waypoint)
             theta = math.atan2(waypoint[1] - p["y"], waypoint[0] - p["x"]) - math.radians(
@@ -2405,53 +1969,6 @@ class Harness:
                 and dist(pos, [destination["x"], destination["y"]]) < 12
             ):
                 values[0] = values[1] = 0
-            if hold:
-                if hold["kind"] == "lower":
-                    tgt = hold["target"]
-                    theta = math.atan2(tgt[1] - p["y"], tgt[0] - p["x"]) - math.radians(p["facing"])
-                    speed = min(35, dist(pos, tgt) * 2)
-                    values[0] = math.cos(theta) * speed
-                    values[1] = -math.sin(theta) * speed
-                    move = "lift_lower"
-                    overrides.append(
-                        "Lift assistance: crossing walk-over line "
-                        + hold["line"]
-                        + " to lower the raised lift on the committed route"
-                    )
-                else:
-                    values[0] = values[1] = 0
-                    move = "lift_wait" if hold["kind"] == "call" else "lift_ride"
-                self.lift_assist_ticks += 1
-            if self.cover and not hold:
-                theta = math.atan2(
-                    self.cover["y"] - p["y"], self.cover["x"] - p["x"]
-                ) - math.radians(p["facing"])
-                speed = min(35, dist(pos, [self.cover["x"], self.cover["y"]]) * 2)
-                values[0] = math.cos(theta) * speed
-                values[1] = -math.sin(theta) * speed
-                move = "cover_seek"
-                self.cover_ticks += 1
-                overrides.append(
-                    "Cover-seeking under unseen fire: moving to a wall-covered cell from the remembered shooter; aim, trigger and weapon unchanged"
-                )
-            if self.cover_holding and not hold and not self.cover:
-                hd = dist(pos, [self.cover_hold["x"], self.cover_hold["y"]])
-                if hd > 8:
-                    theta = math.atan2(
-                        self.cover_hold["y"] - p["y"], self.cover_hold["x"] - p["x"]
-                    ) - math.radians(p["facing"])
-                    speed = min(20, hd * 2)
-                    values[0] = math.cos(theta) * speed
-                    values[1] = -math.sin(theta) * speed
-                else:
-                    values[0] = values[1] = 0
-                move = "cover_hold"
-                self.cover_ticks += 1
-                overrides.append(
-                    "Cover hold under unseen fire: staying in the wall-covered cell for the rest of the cover budget; aim, trigger and weapon unchanged"
-                )
-            if hold and hold["kind"] == "ride":
-                overrides.append("Lift assistance: riding the lift up before continuing the route")
             if destination["kind"] == "enemy":
                 enemy = next(
                     (e for e in self.observation["enemies"] if e["id"] == destination["id"]), None
@@ -2475,53 +1992,6 @@ class Harness:
             values[1] = -35
         elif move == "strafe_right":
             values[1] = 35
-        # Barrel clearance: never stand within96units of a visible barrel (own and enemy fire both detonate them, fixture barrel-v36); a stop or hold there becomes a move to the nearest clear cell.
-        near_barrels = [
-            b
-            for b in self.observation.get("obstacles", [])
-            if b.get("visible") and dist(pos, [b["x"], b["y"]]) < 96
-        ]
-        stopped = (values[0] == 0 and values[1] == 0) or move in ("hold", "enemy_in_firing_range")
-        clear = None
-        if (
-            near_barrels
-            and stopped
-            and "barrel_clearance" in set(self.config.get("assists", []))
-            and not self.escape
-            and not hold
-        ):
-            clear = self.nav.clear_point(pos, self.observation.get("obstacles", []))
-            if clear:
-                theta = math.atan2(clear["y"] - p["y"], clear["x"] - p["x"]) - math.radians(
-                    p["facing"]
-                )
-                speed = min(35, dist(pos, [clear["x"], clear["y"]]) * 2)
-                values[0] = math.cos(theta) * speed
-                values[1] = -math.sin(theta) * speed
-                move = "barrel_clearance"
-                self.barrel_clear_ticks += 1
-                overrides.append(
-                    "Barrel clearance: visible barrel within96units; moving to a clear cell instead of standing; aim, trigger and weapon unchanged"
-                )
-        if clear and not self.barrel_clear:
-            self.barrel_clears += 1
-            self.barrel_clear = dict(since=self.sim_ticks, target=clear)
-            self.log(
-                "barrel_clear_start",
-                game_tick=self.sim_ticks,
-                barrels=[b["id"] for b in near_barrels],
-                target=clear,
-                model_move=a["move"],
-                player=[round(p["x"], 1), round(p["y"], 1)],
-            )
-        elif not clear and self.barrel_clear:
-            self.log(
-                "barrel_clear_end",
-                game_tick=self.sim_ticks,
-                ticks=self.sim_ticks - self.barrel_clear["since"],
-                player=[round(p["x"], 1), round(p["y"], 1)],
-            )
-            self.barrel_clear = None
         if a["dodge"] != "carry_on":
             values[0] = -35 if a["dodge"].startswith("back") else 0
             values[1] = -35 if a["dodge"].endswith("left") else 35
@@ -2531,56 +2001,6 @@ class Harness:
             move = "expired_objective"
             overrides.append(
                 "Objective expired; old MOVE and DODGE released while waiting for fresh decisions"
-            )
-        if self.escape and (
-            self.sim_ticks >= self.escape["until_tick"]
-            or dist(pos, [self.escape["x"], self.escape["y"]]) < 16
-            or p["health"] > 35
-        ):
-            self.log("escape_end", game_tick=self.sim_ticks, player=p)
-            self.escape = None
-            self.invalidate_objective(
-                "Escape finished; replan from new position instead of resuming the previous route"
-            )
-            values[0] = values[1] = 0
-            move = "expired_objective"
-            overrides.append("Escape finished; previous movement released")
-        enabled = set(self.config.get("assists", []))
-        if (
-            self.escape is None
-            and "escape_guard" in enabled
-            and p["health"] <= 30
-            and self.sim_ticks - self.stationary_since >= 21
-            and self.observation["enemies"]
-        ):
-            point = self.nav.escape_point(
-                pos, self.observation["enemies"], self.observation["projectiles"]
-            )
-            if point:
-                self.escape = dict(**point, until_tick=self.sim_ticks + 42)
-                self.escape_count += 1
-                self.last_goal = -100
-                self.log(
-                    "escape_start",
-                    game_tick=self.sim_ticks,
-                    player=p,
-                    target=self.escape,
-                    source_request=a["source_request"],
-                    model_move=a["move"],
-                    reason="Low health and stationary under visible threat",
-                )
-        if self.escape:
-            waypoint = [self.escape["x"], self.escape["y"]]
-            theta = math.atan2(waypoint[1] - p["y"], waypoint[0] - p["x"]) - math.radians(
-                p["facing"]
-            )
-            speed = min(35, dist(pos, waypoint) * 2)
-            values[0] = math.cos(theta) * speed
-            values[1] = -math.sin(theta) * speed
-            move = "escape_guard"
-            self.escape_ticks += 1
-            overrides.append(
-                "Low-health stationary escape guard overrides MOVE; Jev aim, trigger and weapon retained"
             )
         values[3] = int(a["trigger"] == "fire")
         if values[3]:
@@ -2613,42 +2033,7 @@ class Harness:
             key=lambda e: e["distance"],
             default=None,
         )
-        if (
-            hold
-            and hold["kind"] == "call"
-            and eligible
-            and any(eligible["id"] == line["id"] for line in self.nav.lift_lines)
-            and self.sim_ticks - self.lift_observations[hold["sector"]]["changed_tick"] > 6
-        ):
-            since = self.sim_ticks - self.use_latches.get("lift_" + str(hold["sector"]), -1000)
-            if since >= 35:
-                values[4] = 1
-                self.use_latches["lift_" + str(hold["sector"])] = self.sim_ticks
-                self.lift_calls += 1
-                self.use_pulses[eligible["id"]] = self.use_pulses.get(eligible["id"], 0) + 1
-                self.log(
-                    "use_pulse",
-                    line=eligible["id"],
-                    special=eligible.get("special"),
-                    game_tick=self.sim_ticks,
-                    opening_height=eligible.get("opening_height"),
-                    player=[round(p["x"], 1), round(p["y"], 1)],
-                    source_request=a["source_request"],
-                    lift_assistance=True,
-                )
-        elif a["use"] == "use" or (
-            eligible
-            and "exit_activation" in set(self.config.get("assists", []))
-            and eligible.get("kind") == "exit_switch"
-            and (a["snapshot"].get("objective") or {}).get("goal") == "reach_exit"
-            and eligible["id"]
-            == ((a["snapshot"].get("objective") or {}).get("subject") or {}).get("id")
-        ):
-            if a["use"] != "use":
-                overrides.append(
-                    "Exit activation follows the committed reach_exit goal; combat-battery USE answer was "
-                    + str(a["use"])
-                )
+        if a["use"] == "use":
             if eligible is None:
                 overrides.append("USE permission held: no current interactive line in reach")
             elif (
@@ -2678,7 +2063,6 @@ class Harness:
                 self.log(
                     "use_pulse",
                     line=eligible["id"],
-                    special=eligible.get("special"),
                     game_tick=self.sim_ticks,
                     opening_height=eligible.get("opening_height"),
                     player=[round(p["x"], 1), round(p["y"], 1)],
@@ -2798,36 +2182,13 @@ class Harness:
             damage_taken=self.observation.get("player", {}).get("damage_taken"),
             measurement="Native damage counter; failed-route time means commanded destination with stuck displacement; intervention time means a named motor override",
         )
-        self.result["escape_guard"] = dict(
-            activations=self.escape_count,
-            game_seconds=round(self.escape_ticks / 35, 2),
-            attribution="Scripted movement assistance; aim/fire/weapon remain Jev choices",
-        )
-        self.result["mode"] = self.config.get("mode", "observable")
         self.result["boundary"] = dict(
-            mode=self.config.get("mode", "observable"),
+            mode="observable",
             timing=self.config.get("timing", "real_time"),
-            geometry_source=(
-                "seen floor cells and seen wall pieces from the depth buffer"
-                if self.nav.observable
-                else "static full WAD geometry"
-            ),
-            line_semantics=(
-                "visible face textures, effects observed"
-                if self.nav.observable
-                else "WAD line specials"
-            ),
-            lift_facts=(
-                "none out of view; heights only for sectors in view"
-                if self.nav.observable
-                else "all lift sectors within static line of sight"
-            ),
-            outcome_feedback=(
-                "HUD health and armor changes only"
-                if self.nav.observable
-                else "native damage_taken and hit-derived statuses"
-            ),
-            assists_enabled=list(self.config.get("assists", [])),
+            geometry_source="seen floor cells and seen wall pieces from the depth buffer",
+            line_semantics="visible face textures, effects observed",
+            lift_facts="none out of view; heights only for sectors in view",
+            outcome_feedback="HUD health and armor changes only",
             evaluator_fields_hidden_from_actor=list(EVALUATOR_FIELDS),
             uninterrupted_real_time=(
                 self.paused_seconds == 0
@@ -2837,31 +2198,9 @@ class Harness:
             ),
             timing_note="Real-time mode advances with released controls during provider stalls and recovery; pause-assisted mode stops simulation during those states",
         )
-        self.result["cover_seek"] = dict(
-            activations=self.covers,
-            holds=self.cover_holds,
-            game_seconds=round(self.cover_ticks / 35, 2),
-            attribution="Scripted movement assistance toward static cover from remembered shooters when damaged with no enemy in view; aim, trigger and weapon remain the model or selector choice",
-        )
-        self.result["barrel_clearance"] = dict(
-            activations=self.barrel_clears,
-            game_seconds=round(self.barrel_clear_ticks / 35, 2),
-            attribution="Scripted movement assistance away from visible barrels when the model or selector would stand; aim, trigger and weapon remain the model or selector choice",
-        )
         self.result["approach_facing"] = dict(
             game_seconds=round(self.approach_facing_ticks / 35, 2),
             attribution="Motor facing toward the selected exit or switch line within48units of its approach point; the selection, USE-range rule and exit-activation gate are unchanged",
-        )
-        self.result["threat_turn"] = dict(
-            activations=self.threat_turns,
-            game_seconds=round(self.threat_turn_ticks / 35, 2),
-            attribution="Scripted facing assistance when damaged with no enemy in view; movement, trigger and weapon remain the model or selector choice",
-        )
-        self.result["lift_assist"] = dict(
-            game_seconds=round(self.lift_assist_ticks / 35, 2),
-            lift_calls=self.lift_calls,
-            lift_lowers=self.lift_lowers,
-            attribution="Scripted wait, call and ride on the committed route; the destination remains the model or selector choice",
         )
         self.result["doors"] = dict(
             use_pulses=sum(self.use_pulses.values()),
