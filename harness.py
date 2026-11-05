@@ -22,7 +22,6 @@ from tactics import (
     MODES,
     build_menu,
     tactic_questions,
-    fixed_select,
     measure,
 )
 
@@ -1412,11 +1411,7 @@ class Harness:
                     else:
                         selected = None
                         if job["phase"] == "tactic":
-                            selected = (
-                                picks["tactic"]
-                                if self.config["controller"] == "semantic_tactics"
-                                else fixed_select(job["state"]["tactic_candidates"])
-                            )
+                            selected = picks["tactic"]
                             active = self.active_tactic
                             if (
                                 active
@@ -1432,10 +1427,6 @@ class Harness:
                                 self.last_action["committed_mono"] = time.monotonic()
                                 self.last_action["source_request"] = job["id"]
                                 self.tactic_continuations += 1
-                                if self.config["controller"] == "fixed_tactics":
-                                    record["override_reasons"].append(
-                                        "Fixed comparison selector ignores Jev answers for actuation; paid call retained for matched timing policy"
-                                    )
                                 self.log(
                                     "tactic_continue",
                                     request=job["id"],
@@ -1469,10 +1460,6 @@ class Harness:
                                 "carry_on",
                             ):
                                 option["controls"]["dodge"] = picks["dodge"]
-                            if self.config["controller"] == "fixed_tactics":
-                                record["override_reasons"].append(
-                                    "Fixed comparison selector ignores Jev answers for actuation; paid call retained for matched timing policy"
-                                )
                             subject = option["subject"]
                             self.objective = dict(
                                 goal={
