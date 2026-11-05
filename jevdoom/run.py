@@ -1311,7 +1311,7 @@ class Run:
             )
 
     def publish_snapshot(self):
-        state = copy.deepcopy(self._build_view())
+        state = self._build_view()
         tick = state.get("observation", {}).get("tick", 0)
         self.view_port.publish(state, self.jpeg, tick)
 
