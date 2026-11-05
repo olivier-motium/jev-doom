@@ -106,3 +106,15 @@ def test_local_start_reaches_engine_without_charges():
     snapshot = run.view()
     assert snapshot["config"]["controller"] == "local"
     assert run.frame_snapshot()[1] == snapshot["observation"]["tick"]
+
+
+def test_engine_start_failure_is_published():
+    class BrokenEngine(FakeEngine):
+        def start(self, map_name, skill, seed, record_path=None):
+            raise RuntimeError("engine start failed")
+
+    engine = BrokenEngine()
+    run = Run(engine=engine, decider=ImmediateLocal(), store=MemoryStore())
+    assert engine.ended.wait(timeout=5)
+    assert run.view()["status"] == "engine_error"
+    assert run.view()["error"] == "engine start failed"

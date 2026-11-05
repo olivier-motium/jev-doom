@@ -1242,7 +1242,11 @@ class Run:
                         reserved_usd=RESERVE if self.pending_billed else 0,
                     )
         finally:
-            self.engine.close()
+            try:
+                with self.lock:
+                    self.publish_snapshot()
+            finally:
+                self.engine.close()
 
     def shutdown(self):
         self.stop_event.set()
