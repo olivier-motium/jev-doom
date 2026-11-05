@@ -8,7 +8,7 @@ def test_published_state_and_frame_are_owned():
     run = Run.__new__(Run)
     original = {"observation": {"tick": 17, "player": {"health": 80}}}
     run._build_view = lambda: original
-    run.jpeg = b"frame-at-17"
+    run.frame_image = b"frame-at-17"
     run.view_port = SnapshotView()
     run.publish_snapshot()
     original["observation"]["player"]["health"] = 1

@@ -19,6 +19,9 @@ class VizdoomEngine:
         self.wad = wad
         self.game = None
 
+    def navigation_data(self):
+        return self.wad.read_bytes()
+
     def start(self, map_name, skill, seed, record_path=None, replay_path=None):
         self.close()
         self.game = game = vzd.DoomGame()

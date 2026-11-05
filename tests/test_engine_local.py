@@ -8,7 +8,7 @@ import pytest
 from jevdoom.adapters.decider import AsyncDecider
 from jevdoom.adapters.files import FileStore
 from jevdoom.adapters.snapshot import SnapshotView
-from jevdoom.adapters.web import create_app
+from jevdoom.adapters.web import create_app, encode_frame
 from jevdoom.run import Run
 from test_web import request
 
@@ -51,7 +51,7 @@ def test_local_start_runs_real_engine_without_spending(tmp_path):
         frame, tick = app_run.frame_snapshot()
         assert state["config"]["controller"] == "local"
         assert state["records"][-1]["accepted"]
-        assert frame.startswith(b"\xff\xd8") and tick >= 12
+        assert encode_frame(frame).startswith(b"\xff\xd8") and tick >= 12
         ledger = json.loads((tmp_path / "budget.json").read_text())
         assert ledger["calls"] == 0 and ledger["charged_usd"] == 0
     finally:

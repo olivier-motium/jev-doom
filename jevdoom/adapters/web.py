@@ -1,14 +1,26 @@
 """Loopback-only web adapter with no engine startup on import."""
 
 import asyncio
+import io
 import os
 import math
 from contextlib import asynccontextmanager
 from pathlib import Path
+from PIL import Image
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def encode_frame(frame):
+    if frame is None:
+        return b""
+    if isinstance(frame, bytes):
+        return frame
+    buffer = io.BytesIO()
+    Image.fromarray(frame).save(buffer, format="JPEG", quality=82)
+    return buffer.getvalue()
 
 
 def create_app(h):
@@ -69,7 +81,7 @@ def create_app(h):
     def frame():
         image, tick = h.frame_snapshot()
         return Response(
-            image,
+            encode_frame(image),
             media_type="image/jpeg",
             headers={"Cache-Control": "no-store", "X-Tick": str(tick)},
         )
@@ -81,6 +93,7 @@ def create_app(h):
                 if await request.is_disconnected():
                     break
                 image, tick = h.frame_snapshot()
+                image = encode_frame(image)
                 if image:
                     yield (
                         b"--frame\r\nContent-Type: image/jpeg\r\nX-Tick: "

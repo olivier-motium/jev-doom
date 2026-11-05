@@ -2,7 +2,6 @@
 
 import copy
 import hashlib
-import io
 from importlib.metadata import PackageNotFoundError, version
 import json
 import math
@@ -14,7 +13,6 @@ import traceback
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image
 from shapely.geometry import LineString, Point
 from jevdoom.core.navigation import Navigator
 from jevdoom.adapters.gateway import Gateway
@@ -112,7 +110,7 @@ class Run:
         self.observation = {}
         self.records = deque(maxlen=500)
         self.latencies = deque(maxlen=300)
-        self.jpeg = b""
+        self.frame_image = None
         self.map = {}
         self.busy = False
         self.pending_billed = False
@@ -166,7 +164,7 @@ class Run:
         self.engine.start(
             self.config["map"], self.config["skill"], self.config["seed"], self.store.record_path()
         )
-        self.nav = Navigator((ROOT / "assets/freedoom2.wad").read_bytes(), self.config["map"])
+        self.nav = Navigator(self.engine.navigation_data(), self.config["map"])
         self.memory = {}
         self.previous_health = 100
         self.last_damage_tick = -1000
@@ -572,9 +570,7 @@ class Run:
             escape_guard="At health30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
             active_escape=None,
         )
-        buf = io.BytesIO()
-        Image.fromarray(s.screen_buffer).save(buf, format="JPEG", quality=82)
-        self.jpeg = buf.getvalue()
+        self.frame_image = s.screen_buffer
 
     def state_for_model(self):
         return state_for_model(
@@ -1432,7 +1428,7 @@ class Run:
     def publish_snapshot(self):
         state = self._build_view()
         tick = state.get("observation", {}).get("tick", 0)
-        self.view_port.publish(state, self.jpeg, tick)
+        self.view_port.publish(state, self.frame_image, tick)
 
     def view(self):
         current = self.view_port.read()

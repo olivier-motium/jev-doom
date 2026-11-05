@@ -1,6 +1,7 @@
 """Start a local run through HTTP with a fake engine and no provider."""
 
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,6 +20,9 @@ class FakeEngine:
         self.tick = 0
         self.buttons = []
         self.ended = threading.Event()
+
+    def navigation_data(self):
+        return (Path(__file__).resolve().parents[1] / "assets/freedoom2.wad").read_bytes()
 
     def start(self, map_name, skill, seed, record_path=None):
         self.tick = 0
@@ -121,3 +125,4 @@ def test_engine_start_failure_is_published():
     assert engine.ended.wait(timeout=5)
     assert run.view()["status"] == "engine_error"
     assert run.view()["error"] == "engine start failed"
+
