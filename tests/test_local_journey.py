@@ -105,6 +105,9 @@ def test_local_start_reaches_engine_without_charges():
     )
     snapshot = run.view()
     assert snapshot["config"]["controller"] == "local"
+    assert snapshot["records"][-1]["provider"] == "local"
+    assert run.episode_costs()["provider_episode_cost"]["provider"] == "local"
+    assert all(event["provider"] == "local" for event in store.events if event["type"] == "request")
     assert run.frame_snapshot()[1] == snapshot["observation"]["tick"]
 
 

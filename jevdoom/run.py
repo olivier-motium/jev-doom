@@ -700,7 +700,9 @@ class Run:
             self.reserve_call(self.config.get("provider_key", "gateway"))
         self.call_seq += 1
         job = dict(
-            provider=self.config.get("provider_key", "gateway"),
+            provider="local"
+            if self.config["controller"] == "local"
+            else self.config["provider_key"],
             controller=self.config["controller"],
             id=self.call_seq,
             episode=self.episode,
@@ -1068,6 +1070,18 @@ class Run:
     def episode_costs(self):
         if not hasattr(self, "run_budget_start"):
             return {}
+        if self.config.get("controller") == "local":
+            return dict(
+                reported_episode_cost_usd=0,
+                episode_provider_calls=0,
+                provider_episode_cost=dict(
+                    provider="local",
+                    charged_or_reserved_usd=0,
+                    reported_usd=0,
+                    estimated_usd=0,
+                    basis="Local rule uses no provider",
+                ),
+            )
         provider = self.config.get("provider_key", "gateway")
         before = self.run_budget_start["providers"][provider]
         after = self.provider_ledgers[provider]
