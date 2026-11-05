@@ -24,7 +24,6 @@ from tactics import (
     tactic_questions,
     fixed_select,
     measure,
-    investigation_questions,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -249,7 +248,6 @@ class Harness:
         self.tactic_menu = []
         self.omitted_tactics = []
         self.tactic_outcomes = deque(maxlen=12)
-        self.investigation = None
         self.control_rev = 0
         self.worker = threading.Thread(target=self.provider_loop, daemon=True)
         self.worker.start()
@@ -387,9 +385,6 @@ class Harness:
         self.approach_facing_ticks = 0
         self.prediction_statuses = {}
         self.tactic_continuations = 0
-        if self.investigation is None:
-            previous = sorted((RUNS / "investigations").glob("*.json"))
-            self.investigation = json.loads(previous[-1].read_text()) if previous else None
         self.active_tactic = None
         self.tactic_outcomes = deque(maxlen=12)
         self.tactic_menu = []
@@ -1313,99 +1308,6 @@ class Harness:
         self.jobs.put(job)
         self.busy = True
 
-    def save_investigation(self):
-        path = Path(self.investigation["path"])
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(json.dumps(self.investigation, indent=2))
-
-    def request_investigation(self, args):
-        if self.busy or self.status in (
-            "running",
-            "warming",
-            "waiting_provider",
-            "recovering",
-            "paused",
-        ):
-            return
-        capsule = args.get("capsule")
-        if not capsule:
-            capsule = dict(
-                source_run=str(getattr(self, "run_dir", "")),
-                result=self.result,
-                recent_outcomes=list(self.tactic_outcomes)[-5:],
-                hypotheses=[
-                    dict(id="stale_evidence", claim="Decision facts changed before execution"),
-                    dict(
-                        id="route_blocked", claim="A proposed route collided or missed its endpoint"
-                    ),
-                    dict(
-                        id="tactic_wrong",
-                        claim="Facts and route were usable but selected behavior exposed the player",
-                    ),
-                ],
-                tests=[
-                    dict(
-                        id="snapshot_compare",
-                        label="Compare request observations with subsequent execution events",
-                        hypotheses=["stale_evidence", "tactic_wrong"],
-                        outcomes="Changed facts before actuation versus correct facts with ineffective choice",
-                    ),
-                    dict(
-                        id="route_inspection",
-                        label="Reconstruct the failed route with recorded obstacles and actual positions",
-                        hypotheses=["route_blocked", "tactic_wrong"],
-                        outcomes="Collision or unreachable endpoint versus geometrically clear route",
-                    ),
-                    dict(
-                        id="native_fixture",
-                        label="Replay the selected motor in an isolated native fixture",
-                        hypotheses=["route_blocked", "tactic_wrong"],
-                        outcomes="Engine blocks the same motor versus movement succeeds under controlled conditions; fixture cannot prove combat safety",
-                    ),
-                ],
-            )
-        questions = investigation_questions(capsule)
-        state = dict(
-            tick=self.observation.get("tick", 0),
-            purpose="Choose an unpaid discriminating test, not an in-game action",
-            failure_capsule=capsule,
-        )
-        if len(json.dumps(dict(state=state, questions=questions)).encode()) > 48000:
-            self.error = "Investigation capsule exceeds request bound"
-            return
-        if self.cap_blocks():
-            self.error = "Budget prevents investigation call"
-            return
-        self.reserve_call(self.config.get("provider_key", "gateway"))
-        self.call_seq += 1
-        now = time.monotonic()
-        job = dict(
-            provider=self.config.get("provider_key", "gateway"),
-            id=self.call_seq,
-            episode=self.episode,
-            order_rev=self.order_rev,
-            control_rev=self.control_rev,
-            phase="investigation",
-            state=state,
-            questions=questions,
-            snapshot_mono=now,
-            sent_mono=now,
-            sent_at=utc(),
-        )
-        path = RUNS / "investigations" / (datetime.now().strftime("%Y%m%d-%H%M%S") + ".json")
-        self.investigation = dict(
-            status="requesting",
-            path=str(path),
-            capsule=capsule,
-            questions=questions,
-            selected_test=None,
-            findings=None,
-        )
-        self.save_investigation()
-        self.log("request", **{k: v for k, v in job.items() if not k.endswith("_mono")})
-        self.jobs.put(job)
-        self.busy = True
-
     def dispatch(self):
         if self.busy or self.status not in ("warming", "running"):
             return
@@ -1509,25 +1411,6 @@ class Harness:
             with (RUNS / "provider-probes.jsonl").open("a") as f:
                 f.write(json.dumps(record) + "\n")
             self.records.append(record)
-            return
-        if job["phase"] == "investigation":
-            try:
-                self.validate_answers(job, r)
-                selected = r["answers"]["test"]["choice"]
-                self.investigation.update(
-                    status="test_selected",
-                    selected_test=selected,
-                    response=r,
-                    request=job["id"],
-                    findings=None,
-                )
-                record["accepted"] = True
-                record["composed_intent"] = {"selected_unpaid_test": selected, "actuation": False}
-            except Exception as e:
-                self.investigation.update(status="request_failed", error=str(e), response=r)
-            self.records.append(record)
-            self.log("response", record=record)
-            self.save_investigation()
             return
         validation_error = None
         if r.get("ok"):
@@ -2233,19 +2116,8 @@ class Harness:
                             self.begin_run(args, restore=cmd == "load")
                         elif cmd == "checkpoint":
                             self.checkpoint()
-                        elif cmd == "investigate":
-                            self.request_investigation(args)
                         elif cmd == "probe":
                             self.request_probe(args)
-                        elif cmd == "investigation_result":
-                            if self.investigation and args.get("test") == self.investigation.get(
-                                "selected_test"
-                            ):
-                                self.investigation.update(
-                                    status="test_recorded", findings=args.get("findings")
-                                )
-                                self.save_investigation()
-                                self.log("investigation_result", investigation=self.investigation)
                         elif cmd == "stop":
                             self.finish("stopped")
                         elif cmd == "pause" and self.status in (
@@ -2432,7 +2304,6 @@ class Harness:
                     omitted=self.omitted_tactics,
                     outcomes=list(self.tactic_outcomes),
                 ),
-                investigation=self.investigation,
                 status=self.status,
                 error=self.error,
                 config=self.config,

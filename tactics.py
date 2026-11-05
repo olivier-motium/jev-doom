@@ -732,22 +732,3 @@ def measure(option, before, after, nav, reason, elapsed):
         from_tick=before["tick"],
         to_tick=after["tick"],
     )
-
-
-def investigation_questions(capsule):
-    tests = {
-        t[
-            "id"
-        ]: f"{t['label']}; distinguishes {t['hypotheses']}; possible outcomes {t['outcomes']}; unpaid local test"
-        for t in capsule["tests"]
-    }
-    return dict(
-        information=choice(
-            "Which available test most strongly distinguishes the competing hypotheses using direct evidence? Prefer a result that would change the next repair. A death or success alone is not causal proof.",
-            tests,
-        ),
-        test=choice(
-            "Choose the most useful unpaid investigation before another repair. Use existing evidence and competing predictions. Do not infer the information answer in this same call. The selected test will establish facts; your ranking is not proof.",
-            tests,
-        ),
-    )

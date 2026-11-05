@@ -36,7 +36,7 @@ The default run lasts **90 seconds**. Pause, stop, change orders, switch maps be
 
 ## Spending and local data
 
-The default **$15 cumulative charged-or-reserved cap** covers both providers, including checks and investigations, and persists across restarts in `runs/budget.json`. Each request reserves $0.05. When a valid reported cost arrives, it replaces the reservation. Unknown costs keep the reservation; launch-price estimates never replace it. The cap can therefore stop a run before $15 has actually been billed. The time selection is a maximum, not a guarantee: a fresh budget allows at most 300 unknown-cost requests, including checks, and high call frequency can exhaust it sooner. A request could cost more than its reservation, so also configure provider account limits.
+The default **$15 cumulative charged-or-reserved cap** covers both providers, including provider checks, and persists across restarts in `runs/budget.json`. Each request reserves $0.05. When a valid reported cost arrives, it replaces the reservation. Unknown costs keep the reservation; launch-price estimates never replace it. The cap can therefore stop a run before $15 has actually been billed. The time selection is a maximum, not a guarantee: a fresh budget allows at most 300 unknown-cost requests, including checks, and high call frequency can exhaust it sooner. A request could cost more than its reservation, so also configure provider account limits.
 
 Change `JEV_BUDGET_USD` in `.env` and restart to change the cap. Run traces, replies and checkpoints stay in the ignored `runs/` directory. Keep the budget file if you want spending continuity. No requests are made until you click a billed action.
 
