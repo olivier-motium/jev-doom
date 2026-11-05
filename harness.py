@@ -150,10 +150,6 @@ def angle(x):
     return (x + 180) % 360 - 180
 
 
-def choice(instructions, criteria):
-    return dict(type="choice", instructions=instructions, criteria=criteria)
-
-
 def category(name):
     if name in MONSTERS:
         return "enemy"
@@ -193,7 +189,7 @@ class Harness:
             revision="v64-observable-order",
             mode="observable",
             timing="real_time",
-            controller="channels",
+            controller="semantic_tactics",
             start_type="Fresh pistol start",
             provider="Vercel AI Gateway",
             provider_key="gateway",
@@ -240,7 +236,6 @@ class Harness:
         self.recovery_total = 0
         self.paused_seconds = 0
         self.max_seconds = 90
-        self.last_goal = -100
         self.call_seq = 0
         # HTTP can read state before the engine finishes loading the WAD.
         self.active_tactic = None
@@ -275,7 +270,6 @@ class Harness:
             game_tick=self.sim_ticks,
         )
         self.objective = None
-        self.last_goal = -100
         self.control_rev += 1
 
     def provider_loop(self):
@@ -361,7 +355,6 @@ class Harness:
         self.objective = None
         self.last_action = None
         self.controls = {}
-        self.last_goal = -100
         self.seq = 0
         self.sim_ticks = 0
         self.start_wall = time.monotonic()
@@ -415,7 +408,7 @@ class Harness:
             model="jev-latest" if provider == "typesafe" else "typesafe-ai/jev",
         )
         self.config["controller"] = args.get(
-            "controller", self.config.get("controller", "channels")
+            "controller", self.config.get("controller", "semantic_tactics")
         )
         if self.config["controller"] not in MODES:
             self.error = "Unknown controller"
@@ -523,7 +516,6 @@ class Harness:
                 )
                 self.objective = None
                 self.last_action = None
-                self.last_goal = -100
                 self.control_rev += 1
                 self.controls = {
                     "released": True,
@@ -631,7 +623,6 @@ class Harness:
             if attempted and (dist(pos, [attempted["x"], attempted["y"]]) > 45 or idle_use):
                 self.nav.failed[attempted["id"]] += 1
                 self.last_failed_tick = s.tic
-                self.last_goal = -100
                 self.navigation_feedback = dict(
                     target=attempted["id"],
                     reason="Destination movement commanded but less than8units displacement over about2.5seconds",
@@ -825,228 +816,6 @@ class Harness:
         )
         return state
 
-    def questions(self, phase, state):
-        entities = state["enemies"] + state["items"] + state["remembered"]
-        entities = {e["id"]: e for e in entities}
-        if phase == "goal":
-            nav = {
-                e[
-                    "id"
-                ]: f"{e['description']}; {e['distance']} units path; failed {e['failed']}; activated {e.get('uses', 0)} times"
-                for e in state["navigation"]
-            }
-            qs = {}
-            goals = {}
-            p = state["player"]
-            survival = f"Health {p['health']}/100, armor {p['armor']}, current weapon {p['weapon']} with {p['ammo']} ammo, {len(state['enemies'])} visible enemies, recent damage {state['just_took_damage']}. Carried weapons: {', '.join(w['name'] for w in p['carrying'])}."
-            intents = {
-                "enemy": "Deal with the known hostile threat while staying alive",
-                "health": "Get meaningful healing; urgent when health is low. A +1 bonus alone cannot repair serious damage",
-                "ammo": "Get ammunition compatible with carried weapons when running low",
-                "weapon": "Acquire a stronger weapon if still relying on a pistol; nearby shotguns are valuable before entering crowded rooms",
-                "armor": "Get protective armor when current armor is low",
-                "key": "Collect a key to unlock further progress",
-            }
-            for kind, goal in [
-                ("enemy", "kill_enemies"),
-                ("health", "restore_health"),
-                ("ammo", "stock_ammo"),
-                ("weapon", "upgrade_weapon"),
-                ("armor", "add_armor"),
-                ("key", "collect_key"),
-            ]:
-                options = {}
-                for id, e in entities.items():
-                    pickup_name = id.rsplit("_", 1)[0]
-                    owned_weapon = e["kind"] == "weapon" and PICKUP_WEAPON_SLOTS.get(
-                        pickup_name
-                    ) in {w["slot"] for w in p["carrying"]}
-                    effective_kind = "ammo" if owned_weapon else e["kind"]
-                    if effective_kind != kind:
-                        continue
-                    # Memory is evidence of a former sighting, not a currently attackable target.
-                    if kind == "enemy" and not e["visible"]:
-                        continue
-                    path = self.nav.path([p["x"], p["y"]], [e["x"], e["y"]])
-                    if kind != "enemy" and (not path or dist(path[-1], [e["x"], e["y"]]) > 32):
-                        continue
-                    route = (
-                        round(sum(dist(a, b) for a, b in zip(path, path[1:])))
-                        if path
-                        else "unavailable"
-                    )
-                    effect = (
-                        "Already carried weapon; duplicate supplies ammunition only, no weapon upgrade"
-                        if owned_weapon
-                        else PICKUP_EFFECTS.get(pickup_name, kind)
-                    )
-                    options[id] = (
-                        f"{e['label']}: {effect}; {e['distance']} units straight-line, estimated geometric route {route} units (doors may need opening), bearing{e['bearing']}, visible{e['visible']}, last seen{e['last_seen_seconds']}sec"
-                    )
-                if options:
-                    qs["which_" + kind] = choice(
-                        f"If pursuing {goal}, which known {kind} is best? {survival} Compare actual benefit, route length and threats. Prefer meaningful healing over tiny bonuses when hurt.",
-                        options,
-                    )
-                    goals[goal] = intents[kind] + ". Known options: " + "; ".join(options.values())
-            if nav:
-                qs["navigation"] = choice(
-                    "Choose the next route to advance through the level. Seek unexplored connected territory or the exit. Penalize repeated failed or already activated targets. This is navigation only, combat may temporarily take priority.",
-                    nav,
-                )
-                goals["advance"] = "Explore the navigation choice, open doors and reach exit"
-            exits = {
-                e[
-                    "id"
-                ]: f"Known exit: {e['distance']} units reachable path; failed {e['failed']}; {e['description']}"
-                for e in state["navigation"]
-                if e["kind"] == "exit"
-            }
-            if exits:
-                qs["exit"] = choice(
-                    "Which known exit should end this level? Choose a reachable exit using route length and failures.",
-                    exits,
-                )
-                goals["reach_exit"] = (
-                    "Finish this level by reaching and activating a known exit. Combat can still aim and fire while moving there. No need to kill every enemy or collect every item. Known exit routes: "
-                    + "; ".join(exits.values())
-                )
-            goals["scout"] = "Look around to discover a missing route or enemy without moving"
-            qs["goal"] = choice(
-                f"What is the highest priority NOW? {survival} Reach the exit alive. Reconsider exploration when wounded or under-equipped. Seek useful healing at low health and a stronger known weapon when using only a pistol. Combat channels can aim/fire while moving toward supplies. Choose from facts and standing_order; do not consume answers to the other questions in this same call.",
-                goals,
-            )
-            return qs
-        objective = state.get("objective") or {}
-        qs = {}
-        destination = objective.get("subject")
-        p = state["player"]
-        has_route = bool(
-            destination and self.nav.path([p["x"], p["y"]], [destination["x"], destination["y"]])
-        )
-        faces = {
-            "hold": "Keep current facing",
-            "scan_left": "Look left to discover what is missing",
-            "scan_right": "Look right to discover what is missing",
-        }
-        if has_route:
-            faces = {"path": "Face the next waypoint toward the committed objective", **faces}
-        faces.update(
-            {
-                "door_"
-                + e[
-                    "id"
-                ]: f"Face nearby interactive line {e['id']} at ({e['x']},{e['y']}), path distance{e['distance']}units; turn to inspect/use this door or switch"
-                for e in state["navigation"]
-                if e["kind"] in ("door_or_switch", "exit") and e["distance"] < 150
-            }
-        )
-        faces.update(
-            {
-                e["id"]: f"Face visible {e['label']}, bearing{e['bearing']} distance{e['distance']}"
-                for e in state["enemies"][:6]
-            }
-        )
-        recent_enemies = [
-            e for e in state["remembered"] if e["kind"] == "enemy" and e["last_seen_seconds"] <= 5
-        ][:3]
-        faces.update(
-            {
-                "recent_"
-                + e[
-                    "id"
-                ]: f"Turn toward last seen {e['label']}, bearing{e['bearing']} distance{e['distance']}, seen {e['last_seen_seconds']}s ago; it may be shooting from outside the view"
-                for e in recent_enemies
-            }
-        )
-        visible_summary = (
-            "; ".join(
-                f"{e['id']} bearing{e['bearing']}degrees distance{e['distance']}units"
-                for e in state["enemies"]
-            )
-            or "none"
-        )
-        qs["face"] = choice(
-            f"Where should eyes and gun point NOW? Visible hostile monster types: {visible_summary}. Aim at a visible hostile while movement can independently continue toward the navigation or pickup objective. The goal advance does not mean ignore enemies. If no enemy is visible but you are taking damage, turn toward the most recently seen enemy (recent_ options); otherwise face an offered PATH or nearby DOOR, and scan when neither exists. Do not keep an old combat bearing while walking blindly. When stuck beside a door, face that door. Unknown enemy HP is not evidence of death. Respect standing_order.",
-            faces,
-        )
-        moves = {
-            "hold": "Stay in place while aiming or firing",
-            "back": "Retreat opposite the current facing",
-            "strafe_left": "Strafe left while aiming",
-            "strafe_right": "Strafe right while aiming",
-        }
-        if has_route:
-            moves = {
-                "destination": "Walk toward the committed objective using path geometry",
-                **moves,
-            }
-        qs["move"] = choice(
-            "How should the player move given the COMMITTED objective? Movement and aiming are independent. "
-            + (
-                "destination follows the reachable committed objective; for a visible enemy it stops at firing range (pistol384units, shotgun240units), not at the monster body."
-                if has_route
-                else "There is no reachable committed destination; choose a local movement or hold while scanning."
-            ),
-            moves,
-        )
-        qs["dodge"] = choice(
-            "Is an immediate dodge needed for a projectile or close melee threat? Carry on unless this exact moment requires it.",
-            {
-                "carry_on": "Keep normal movement",
-                "left": "Dodge left",
-                "right": "Dodge right",
-                "back_left": "Dodge backward and left",
-                "back_right": "Dodge backward and right",
-            },
-        )
-        barrels = (
-            "; ".join(
-                f"{e['id']} distance{e['distance']} bearing{e['bearing']}"
-                for e in state.get("obstacles", [])
-                if e["visible"]
-            )
-            or "none"
-        )
-        qs["trigger"] = choice(
-            f"Should the gun trigger be held NOW? Weapon {state['player']['weapon']}, ammo {state['player']['ammo']}. Visible hostile monster types: {visible_summary}. Choose FIRE to permit attacking a visible threat during this control lease, including while turning to aim. You need not wait for a later already-aligned observation: the motor blocks shots until the independently selected FACE target is visible and aligned. This does not consume the FACE answer in this call. Navigation is not a reason to withhold firing permission. Nearby explosive barrels: {barrels}. Avoid firing through a barrel close to the player. Enemy HP is unavailable, not zero. Respect standing_order. Never shoot only a remembered enemy.",
-            {
-                "fire": "Permit fire at the selected visible enemy once aligned; motor waits while turning",
-                "hold_fire": "Do not permit any shots during this control lease",
-            },
-        )
-        p = state["player"]
-        weapons = {"keep": f"Keep {p['weapon']} ({p['ammo']} ammo)"}
-        weapons.update(
-            {
-                str(w["slot"]): f"Switch to {w['name']} ({w['ammo']} ammo)"
-                for w in p["carrying"]
-                if w["slot"] >= 2 and w["slot"] != p["weapon_slot"] and w["ammo"] > 0
-            }
-        )
-        qs["weapon"] = choice(
-            f"Which carried weapon suits NOW? Current {p['weapon']} with {p['ammo']} ammo. Visible enemies: {visible_summary}. Shotgun is powerful within500units; pistol is precise farther away. Switching lowers/raises the gun and briefly prevents firing. Keep the current weapon when no visible threat or clear ammo/range reason warrants switching. Do not alternate weapons just because a target briefly disappears.",
-            weapons,
-        )
-        lines_ahead = state.get("interaction_ahead_within_USE_range", [])
-        ahead = (
-            "; ".join(
-                f"{e['id']} kind {e['kind']} at {e['distance']} units"
-                + (
-                    f", opening {e['opening_height']} units, passable {e['door_passable']}"
-                    if e["kind"] == "door"
-                    else ", needs USE to activate"
-                )
-                for e in lines_ahead
-            )
-            or "none"
-        )
-        qs["use"] = choice(
-            f"Should USE be pressed NOW? Interactive lines directly ahead within USE reach: {ahead}. An exit switch, switch or lift switch only works when USE is pressed while facing it; a closed door needs USE to open; an open door is walked through without USE. Do not press USE when no eligible line is ahead.",
-            {"use": "Pulse USE on the interactive line ahead", "no_use": "Do not press USE"},
-        )
-        return qs
-
     def validate_answers(self, job, r):
         if not r.get("ok"):
             raise ValueError(str(r.get("error", "Provider failed")))
@@ -1188,19 +957,12 @@ class Harness:
         now = time.monotonic()
         if now - self.last_dispatch < 0.12:
             return
-        phase = (
-            ("goal" if self.objective is None or now - self.last_goal > 3 else "combat")
-            if self.config.get("controller", "channels") == "channels"
-            else "tactic"
-        )
+        phase = "tactic"
         state = self.state_for_model()
-        if phase == "tactic":
-            self.tactic_menu, self.omitted_tactics = build_menu(state, self.nav)
-            state["tactic_candidates"] = self.tactic_menu
-            state["omitted_tactics"] = self.omitted_tactics
-            questions = tactic_questions(self.tactic_menu, state)
-        else:
-            questions = self.questions(phase, state)
+        self.tactic_menu, self.omitted_tactics = build_menu(state, self.nav)
+        state["tactic_candidates"] = self.tactic_menu
+        state["omitted_tactics"] = self.omitted_tactics
+        questions = tactic_questions(self.tactic_menu, state)
         if len(json.dumps({"state": state, "questions": questions}).encode()) > 48000:
             self.finish("request_limit")
             return
@@ -1375,163 +1137,111 @@ class Harness:
                     record["override_reasons"].append("Snapshot older than2seconds; discarded")
                 else:
                     picks = {k: a["choice"] for k, a in answers.items()}
-                    if job["phase"] == "goal":
-                        goal = picks["goal"]
-                        kind = {
-                            "kill_enemies": "enemy",
-                            "restore_health": "health",
-                            "stock_ammo": "ammo",
-                            "upgrade_weapon": "weapon",
-                            "add_armor": "armor",
-                            "collect_key": "key",
-                        }.get(goal)
-                        target = (
-                            picks.get("which_" + kind)
-                            if kind
-                            else picks.get("exit")
-                            if goal == "reach_exit"
-                            else picks.get("navigation")
-                            if goal == "advance"
-                            else None
-                        )
-                        pool = (
-                            job["state"]["enemies"]
-                            + job["state"]["items"]
-                            + job["state"]["remembered"]
-                            + job["state"]["navigation"]
-                        )
-                        subject = next((x for x in pool if x["id"] == target), None)
-                        self.objective = dict(
-                            goal=goal,
-                            subject=subject,
-                            committed_tick=self.observation["tick"],
+                    selected = picks["tactic"]
+                    active = self.active_tactic
+                    if (
+                        active
+                        and self.last_action is not None
+                        and self.status == "running"
+                        and active["option"]["id"] == selected
+                        and (self.sim_ticks - active["started_tick"]) / 35
+                        < active["option"]["expiry_seconds"]
+                    ):
+                        # Same option re-selected inside its window: one pending prediction continues against the original before-state.
+                        active["request"] = job["id"]
+                        active["rubrics"] = picks
+                        self.last_action["committed_mono"] = time.monotonic()
+                        self.last_action["source_request"] = job["id"]
+                        self.tactic_continuations += 1
+                        self.log(
+                            "tactic_continue",
                             request=job["id"],
+                            tactic=selected,
+                            started_tick=active["started_tick"],
+                            game_tick=self.sim_ticks,
                         )
-                        self.last_goal = time.monotonic()
-                    else:
-                        selected = None
-                        if job["phase"] == "tactic":
-                            selected = picks["tactic"]
-                            active = self.active_tactic
-                            if (
-                                active
-                                and self.last_action is not None
-                                and self.status == "running"
-                                and active["option"]["id"] == selected
-                                and (self.sim_ticks - active["started_tick"]) / 35
-                                < active["option"]["expiry_seconds"]
-                            ):
-                                # Same option re-selected inside its window: one pending prediction continues against the original before-state.
-                                active["request"] = job["id"]
-                                active["rubrics"] = picks
-                                self.last_action["committed_mono"] = time.monotonic()
-                                self.last_action["source_request"] = job["id"]
-                                self.tactic_continuations += 1
-                                self.log(
-                                    "tactic_continue",
-                                    request=job["id"],
-                                    tactic=selected,
-                                    started_tick=active["started_tick"],
-                                    game_tick=self.sim_ticks,
-                                )
-                                record["accepted"] = True
-                                record["composed_intent"] = {
-                                    k: v
-                                    for k, v in self.last_action.items()
-                                    if k not in ("snapshot", "committed_mono")
-                                }
-                                self.records.append(record)
-                                self.log("response", record=record)
-                                return
-                        self.end_tactic("replaced")
-                        if job["phase"] == "tactic":
-                            option = copy.deepcopy(
-                                next(
-                                    t
-                                    for t in job["state"]["tactic_candidates"]
-                                    if t["id"] == selected
-                                )
+                        record["accepted"] = True
+                        record["composed_intent"] = {
+                            k: v
+                            for k, v in self.last_action.items()
+                            if k not in ("snapshot", "committed_mono")
+                        }
+                        self.records.append(record)
+                        self.log("response", record=record)
+                        return
+                    self.end_tactic("replaced")
+                    option = copy.deepcopy(
+                        next(t for t in job["state"]["tactic_candidates"] if t["id"] == selected)
+                    )
+                    if picks.get("dodge") in (
+                        "left",
+                        "right",
+                        "back_left",
+                        "back_right",
+                        "carry_on",
+                    ):
+                        option["controls"]["dodge"] = picks["dodge"]
+                    subject = option["subject"]
+                    self.objective = dict(
+                        goal={
+                            "weapon": "upgrade_weapon",
+                            "health": "restore_health",
+                            "armor": "add_armor",
+                            "combat": "kill_enemies",
+                            "exit": "reach_exit",
+                        }.get(option["kind"], option["kind"]),
+                        subject=subject,
+                        committed_tick=self.observation["tick"],
+                        request=job["id"],
+                    )
+                    # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
+                    if (
+                        option["kind"] == "advance"
+                        and subject
+                        and subject.get("kind") == "frontier"
+                    ):
+                        self.exploration_target = subject["id"]
+                    elif option["kind"] == "advance" and subject:
+                        self.exploration_target = None
+                    snapshot = copy.deepcopy(job["state"])
+                    snapshot["objective"] = copy.deepcopy(self.objective)
+                    self.last_action = dict(
+                        **option["controls"],
+                        source_request=job["id"],
+                        source_tick=job["state"]["tick"],
+                        control_rev=self.control_rev,
+                        committed_mono=time.monotonic(),
+                        snapshot=snapshot,
+                    )
+                    self.active_tactic = dict(
+                        option=option,
+                        before=copy.deepcopy(self.observation),
+                        started_tick=self.sim_ticks,
+                        request=job["id"],
+                        rubrics=picks,
+                        selector=self.config["controller"],
+                    )
+                    self.tactic_decisions += 1
+                    self.log("tactic_start", **self.active_tactic)
+                    if self.status == "warming":
+                        self.status = "running"
+                        self.error = None
+                        if not self.started_play:
+                            self.start_wall = time.monotonic()
+                            self.started_play = True
+                        if self.pause_started is not None:
+                            elapsed = time.monotonic() - self.pause_started
+                            self.paused_seconds += elapsed
+                            self.pause_started = None
+                            self.log(
+                                "simulation_resumed",
+                                pause_seconds=round(elapsed, 3),
+                                game_tick=self.observation["tick"],
                             )
-                            if picks.get("dodge") in (
-                                "left",
-                                "right",
-                                "back_left",
-                                "back_right",
-                                "carry_on",
-                            ):
-                                option["controls"]["dodge"] = picks["dodge"]
-                            subject = option["subject"]
-                            self.objective = dict(
-                                goal={
-                                    "weapon": "upgrade_weapon",
-                                    "health": "restore_health",
-                                    "armor": "add_armor",
-                                    "combat": "kill_enemies",
-                                    "exit": "reach_exit",
-                                }.get(option["kind"], option["kind"]),
-                                subject=subject,
-                                committed_tick=self.observation["tick"],
-                                request=job["id"],
-                            )
-                            # The exploration objective persists across combat and pickups: the last frontier Jev chose is offered again as a resume option while it is still a frontier.
-                            if (
-                                option["kind"] == "advance"
-                                and subject
-                                and subject.get("kind") == "frontier"
-                            ):
-                                self.exploration_target = subject["id"]
-                            elif option["kind"] == "advance" and subject:
-                                self.exploration_target = None
-                            snapshot = copy.deepcopy(job["state"])
-                            snapshot["objective"] = copy.deepcopy(self.objective)
-                            self.last_action = dict(
-                                **option["controls"],
-                                source_request=job["id"],
-                                source_tick=job["state"]["tick"],
-                                control_rev=self.control_rev,
-                                committed_mono=time.monotonic(),
-                                snapshot=snapshot,
-                            )
-                            self.active_tactic = dict(
-                                option=option,
-                                before=copy.deepcopy(self.observation),
-                                started_tick=self.sim_ticks,
-                                request=job["id"],
-                                rubrics=picks,
-                                selector=self.config["controller"],
-                            )
-                            self.tactic_decisions += 1
-                            self.log("tactic_start", **self.active_tactic)
-                        else:
-                            self.last_action = dict(
-                                **picks,
-                                source_request=job["id"],
-                                source_tick=job["state"]["tick"],
-                                control_rev=self.control_rev,
-                                committed_mono=time.monotonic(),
-                                snapshot=job["state"],
-                            )
-                        if self.status == "warming":
-                            self.status = "running"
-                            self.error = None
-                            if not self.started_play:
-                                self.start_wall = time.monotonic()
-                                self.started_play = True
-                            if self.pause_started is not None:
-                                elapsed = time.monotonic() - self.pause_started
-                                self.paused_seconds += elapsed
-                                self.pause_started = None
-                                self.log(
-                                    "simulation_resumed",
-                                    pause_seconds=round(elapsed, 3),
-                                    game_tick=self.observation["tick"],
-                                )
-                            self.recovery_attempts = 0
+                        self.recovery_attempts = 0
                     record["accepted"] = True
                     record["composed_intent"] = copy.deepcopy(
-                        self.objective
-                        if job["phase"] == "goal"
-                        else {
+                        {
                             k: v
                             for k, v in self.last_action.items()
                             if k not in ("snapshot", "committed_mono")
@@ -1915,7 +1625,7 @@ class Harness:
         self.result["cost_final"] = not self.busy
         self.result["pending_reservation_usd"] = RESERVE if self.busy else 0
         self.result["controller_metrics"] = dict(
-            controller=self.config.get("controller", "channels"),
+            controller=self.config.get("controller", "semantic_tactics"),
             failed_route_seconds=round(self.failed_route_ticks / 35, 3),
             motor_intervention_seconds=round(self.intervention_ticks / 35, 3),
             tactic_decisions=self.tactic_decisions,
@@ -1994,7 +1704,6 @@ class Harness:
                             self.order = str(args["text"])[:1500]
                             self.order_rev += 1
                             self.last_action = None
-                            self.last_goal = -100
                             self.log("orders", text=self.order, revision=self.order_rev)
                     while not self.replies.empty():
                         self.accept_reply(*self.replies.get())

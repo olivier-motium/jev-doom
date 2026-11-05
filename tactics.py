@@ -4,7 +4,7 @@ import math
 from shapely.geometry import LineString
 from navigation import dist
 
-MODES = ("channels", "semantic_tactics")
+MODES = ("semantic_tactics",)
 
 
 def route_length(path):
