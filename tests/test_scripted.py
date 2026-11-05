@@ -1,9 +1,7 @@
 """Scripted cases the golden runs do not reach: late replies, an order change during a call,
 a provider failure with recovery, and a run that ends in death.
 
-All but the provider failure are pinned like golden runs. Its recovery path saves a native
-checkpoint (harness.py:480), and a save advances the engine, so that run is checked by its
-events only.
+All but the provider failure are pinned like golden runs. Recovery is checked by its events.
 """
 
 import json
@@ -55,8 +53,6 @@ def test_provider_timeout_then_recovery(play):
     h = run.harness
     [pause] = events(run, "recovery_pause")
     assert (pause["request"], pause["attempt"], pause["retry_delay_seconds"]) == (4, 1, 15)
-    [saved] = events(run, "checkpoint_saved")
-    assert saved["game_tick"] == pause["game_tick"]
     [retry] = events(run, "recovery_request")
     # Real time: the world runs on with released controls for the 15 s backoff, then one more
     # tick while the fresh request is pending.
@@ -71,7 +67,6 @@ def test_run_ends_in_death(play):
     require_hash_seed()
     run = play(Case("map02_seed25_skill5", map="MAP02", seed=25, skill=5))
     check_golden("map02_seed25_skill5", run)
-    assert not events(run, "checkpoint_saved")
     h = run.harness
     result = json.loads((h.run_dir / "result.json").read_text())
     assert (h.status, result["reason"]) == ("dead", "dead")

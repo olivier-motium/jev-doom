@@ -82,8 +82,6 @@ async def command(command: str, request: Request):
         "pause",
         "resume",
         "orders",
-        "checkpoint",
-        "load",
         "probe",
     ):
         raise HTTPException(404)
@@ -93,7 +91,7 @@ async def command(command: str, request: Request):
         raise HTTPException(400, "Invalid JSON")
     if not isinstance(args, dict):
         raise HTTPException(400, "Expected a JSON object")
-    if command in ("start", "load", "probe"):
+    if command in ("start", "probe"):
         provider = args.get("provider", h.config["provider_key"])
         if provider not in ("typesafe", "gateway"):
             raise HTTPException(400, "Unknown provider")

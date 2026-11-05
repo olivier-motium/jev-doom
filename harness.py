@@ -378,8 +378,6 @@ class Harness:
         self.pause_started = None
         self.paused_seconds = 0
         self.free_run_ticks = 0
-        self.continued_from = None
-        self.last_checkpoint_tick = 0
         self.use_latches = {}
         self.use_pulses = {}
         self.approach_facing_ticks = 0
@@ -400,77 +398,8 @@ class Harness:
         self.capture()
         self.status = "ready"
 
-    def checkpoint(self):
-        if self.game.is_episode_finished() or self.game.is_player_dead():
-            return
-        native = RUNS / "checkpoint.zds"
-        staging = RUNS / "checkpoint-next.zds"
-        native_arg = min((str(staging), os.path.relpath(staging)), key=len)
-        if len(native_arg.encode()) > 100:
-            raise ValueError("Native save path exceeds the engine command limit")
-        self.game.set_action([0] * len(BUTTONS))
-        if staging.exists():
-            staging.unlink()
-        before = self.game.get_state().tic
-        self.game.save(native_arg)
-        # save() advances two native ticks without refreshing the public state.
-        self.game.advance_action(1)
-        current = self.game.get_state()
-        self.sim_ticks += max(0, current.tic - before) if current is not None else 3
-        self.last_checkpoint_tick = self.sim_ticks
-        if self.game.is_episode_finished() or self.game.is_player_dead():
-            self.finish(
-                "dead"
-                if self.game.is_player_dead()
-                else "engine_timeout"
-                if self.game.is_episode_timeout_reached()
-                else "level_complete"
-                if self.game.get_last_reward() >= 1
-                else "episode_ended_unverified"
-            )
-            return
-        self.capture()
-        if not staging.exists() or staging.stat().st_size < 1000:
-            self.log(
-                "checkpoint_failed",
-                reason="Engine did not create native save; prior checkpoint retained",
-                game_tick=self.observation["tick"],
-            )
-            return
-        staging.replace(native)
-        data = dict(
-            at=utc(),
-            source_run=str(getattr(self, "run_dir", "")),
-            config=self.config,
-            sim_ticks=self.sim_ticks,
-            tick=self.game.get_state().tic,
-            player=self.observation["player"],
-            memory=self.memory,
-            visits=[[x, y, n] for (x, y), n in self.nav.visits.items() if n > 0],
-            seen=list(self.nav.seen),
-            trail=self.nav.trail,
-            failed=dict(self.nav.failed),
-            used=dict(self.nav.used),
-            distance=self.distance,
-            order=self.order,
-            order_rev=self.order_rev,
-        )
-        tmp = RUNS / "checkpoint.tmp"
-        tmp.write_text(json.dumps(data))
-        tmp.replace(RUNS / "checkpoint.json")
-        self.last_checkpoint_tick = self.sim_ticks
-        self.log("checkpoint_saved", game_tick=data["tick"], path=str(RUNS / "checkpoint.zds"))
-
-    def begin_run(self, args, restore=False):
-        if restore and not (RUNS / "checkpoint.zds").is_file():
-            self.status = "checkpoint_error"
-            self.error = "Native saved game is missing; load canceled before any Jev dispatch"
-            self.controls = {"released": True, "reason": self.error}
-            return
-        saved = json.loads((RUNS / "checkpoint.json").read_text()) if restore else None
-        selected_map = (
-            saved["config"]["map"] if restore else str(args.get("map", self.config["map"])).upper()
-        )
+    def begin_run(self, args):
+        selected_map = str(args.get("map", self.config["map"])).upper()
         if selected_map not in ("MAP01", "MAP02"):
             self.error = "Supported maps are MAP01 and MAP02; MAP03 hangs this ViZDoom build at engine init (tested 18 September 2026), later maps untested"
             return
@@ -493,97 +422,44 @@ class Harness:
             self.error = "Unknown controller"
             return
         self.config["map"] = selected_map
+        seed = args.get("seed", 17)
+        skill = args.get("skill", 3)
+        if type(seed) is not int or not 0 <= seed <= 2**31 - 1:
+            self.error = "Seed must be an integer"
+            return
+        if type(skill) is not int or not 1 <= skill <= 5:
+            self.error = "Skill must be an integer from 1 to 5"
+            return
+        self.config["seed"] = seed
+        self.config["skill"] = skill
+        timing = args.get("timing", "real_time")
+        if timing not in ("real_time", "pause_assisted"):
+            self.error = "timing must be real_time (default) or pause_assisted (labelled)"
+            return
+        self.config["timing"] = timing
+        parts = []
+        if selected_map != "MAP01":
+            parts.append(selected_map)
+        if skill != 3:
+            parts.append("skill %d" % skill)
+        if seed != 17:
+            parts.append("unused seed %d" % seed)
         self.config["start_type"] = (
-            "Native checkpoint continuation" if restore else "Fresh pistol start"
+            "Fresh pistol start"
+            if not parts
+            else "Fresh pistol start on "
+            + ", ".join(parts)
+            + " ("
+            + ("transfer check" if parts == ["unused seed %d" % seed] else "harder condition")
+            + ")"
         )
-        if not restore:
-            seed = args.get("seed", 17)
-            skill = args.get("skill", 3)
-            if type(seed) is not int or not 0 <= seed <= 2**31 - 1:
-                self.error = "Seed must be an integer"
-                return
-            if type(skill) is not int or not 1 <= skill <= 5:
-                self.error = "Skill must be an integer from 1 to 5"
-                return
-            self.config["seed"] = seed
-            self.config["skill"] = skill
-            timing = args.get("timing", "real_time")
-            if timing not in ("real_time", "pause_assisted"):
-                self.error = "timing must be real_time (default) or pause_assisted (labelled)"
-                return
-            self.config["timing"] = timing
-            parts = []
-            if selected_map != "MAP01":
-                parts.append(selected_map)
-            if skill != 3:
-                parts.append("skill %d" % skill)
-            if seed != 17:
-                parts.append("unused seed %d" % seed)
-            self.config["start_type"] = (
-                "Fresh pistol start"
-                if not parts
-                else "Fresh pistol start on "
-                + ", ".join(parts)
-                + " ("
-                + ("transfer check" if parts == ["unused seed %d" % seed] else "harder condition")
-                + ")"
-            )
-            self.config["start_type"] += ", observable mode"
-            if timing == "pause_assisted":
-                self.config["start_type"] += ", pause-assisted timing"
+        self.config["start_type"] += ", observable mode"
+        if timing == "pause_assisted":
+            self.config["start_type"] += ", pause-assisted timing"
         self.new_game()
         self.episode += 1
         self.max_seconds = min(600, max(5, float(args.get("seconds", 90))))
         self.config["revision"] = args.get("revision", self.config["revision"])[:40]
-        if restore:
-            saved = json.loads((RUNS / "checkpoint.json").read_text())
-            self.game.set_action([0] * len(BUTTONS))
-            native = RUNS / "checkpoint.zds"
-            self.game.load(min((str(native), os.path.relpath(native)), key=len))
-            now_tick = self.game.get_state().tic
-            self.capture()
-            actual = self.observation["player"]
-            expected = saved["player"]
-            expected_ammo = {w["slot"]: w["ammo"] for w in expected["carrying"]}
-            actual_ammo = {w["slot"]: w["ammo"] for w in actual["carrying"]}
-            inventory_matches = expected_ammo.keys() == actual_ammo.keys() and all(
-                abs(actual_ammo[k] - v) <= 1 for k, v in expected_ammo.items()
-            )
-            if (
-                dist([actual["x"], actual["y"]], [expected["x"], expected["y"]]) > 16
-                or any(actual[k] != expected[k] for k in ("health", "armor"))
-                or not inventory_matches
-            ):
-                self.status = "checkpoint_error"
-                self.error = "Native restored position/health/inventory did not match checkpoint; no Jev dispatch"
-                self.controls = {"released": True, "reason": self.error}
-                return
-            self.sim_ticks = saved["sim_ticks"]
-            self.memory = saved["memory"]
-            for e in self.memory.values():
-                e["seen_tick"] = now_tick - (saved["tick"] - e["seen_tick"])
-            self.nav.visits.update({(x, y): n for x, y, n in saved["visits"]})
-            self.nav.seen = {tuple(c) for c in saved["seen"]}
-            self.nav.trail = saved["trail"]
-            self.nav.failed.update(saved["failed"])
-            self.nav.used.update(saved["used"])
-            self.distance = saved["distance"]
-            self.last_position = None
-            self.order = saved["order"]
-            self.order_rev = saved["order_rev"]
-            self.last_nav = 0
-            self.position_history.clear()
-            self.continued_from = dict(
-                source_run=saved["source_run"],
-                at=saved["at"],
-                game_seconds=round(saved["sim_ticks"] / 35, 2),
-                saved_player=expected,
-                restored_player=actual,
-                label="Native saved-game continuation; not a fresh-seed attempt",
-                counter_note="Hit/damage counters restart on native load; prior counters retained in saved_player",
-            )
-            self.last_checkpoint_tick = self.sim_ticks
-            self.capture()
         self.run_dir = RUNS / (
             datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + self.config["revision"]
         )
@@ -596,7 +472,6 @@ class Harness:
             "episode_start",
             config=self.config,
             max_seconds=self.max_seconds,
-            continued_from=self.continued_from,
         )
         self.records.clear()
         self.result = {}
@@ -1462,7 +1337,6 @@ class Harness:
                     if self.config.get("timing", "real_time") == "pause_assisted"
                     else "Provider recovery: controls released, world running",
                 }
-                self.checkpoint()
                 self.log(
                     "recovery_pause",
                     request=job["id"],
@@ -2051,7 +1925,6 @@ class Harness:
             else "Pause-assisted (labelled): simulation paused on provider/control-lease stalls and during bounded backoff"
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
-        self.result["continued_from"] = self.continued_from
         self.result["cost_final"] = not self.busy
         self.result["pending_reservation_usd"] = RESERVE if self.busy else 0
         self.result["controller_metrics"] = dict(
@@ -2103,7 +1976,7 @@ class Harness:
                 with self.lock:
                     while not self.commands.empty():
                         cmd, args = self.commands.get()
-                        if cmd in ("start", "load"):
+                        if cmd == "start":
                             if self.busy or self.status in (
                                 "running",
                                 "warming",
@@ -2111,11 +1984,7 @@ class Harness:
                                 "waiting_provider",
                             ):
                                 continue
-                            if cmd == "load" and not (RUNS / "checkpoint.json").exists():
-                                continue
-                            self.begin_run(args, restore=cmd == "load")
-                        elif cmd == "checkpoint":
-                            self.checkpoint()
+                            self.begin_run(args)
                         elif cmd == "probe":
                             self.request_probe(args)
                         elif cmd == "stop":
@@ -2224,8 +2093,6 @@ class Harness:
                                     controls=self.controls,
                                     progress=self.observation["progress"],
                                 )
-                            if self.sim_ticks - self.last_checkpoint_tick >= 1050:
-                                self.checkpoint()
                     elif (
                         self.config.get("timing", "real_time") == "real_time"
                         and self.status in ("recovering", "waiting_provider", "warming")
