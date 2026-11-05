@@ -52,9 +52,8 @@ def test_provider_timeout_then_recovery(play):
     [pause] = events(run, "recovery_pause")
     assert (pause["request"], pause["attempt"], pause["retry_delay_seconds"]) == (4, 1, 15)
     [retry] = events(run, "recovery_request")
-    # Real time: the world runs on with released controls for the 15 s backoff, then one more
-    # tick while the fresh request is pending.
-    assert retry["game_tick"] - pause["game_tick"] == 15 * 35
+    # The 15 s backoff ends between observations. The fresh capture is one tick later.
+    assert retry["game_tick"] - pause["game_tick"] == 15 * 35 + 1
     assert h.free_run_ticks == 15 * 35 + 1
     assert (h.status, h.recovery_total, h.recovery_attempts) == ("running", 1, 0)
     [after_retry] = [r for r in run.records() if r["id"] == 5]
