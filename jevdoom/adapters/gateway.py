@@ -84,10 +84,24 @@ class Gateway:
                 "state": job["state"],
                 "questions": job["questions"],
             }
-            self.process.stdin.write(json.dumps(payload) + "\n")
-            self.process.stdin.flush()
+            deadline = started + self.timeout
+            sent = queue.Queue(maxsize=1)
+            process = self.process
+
+            def send():
+                try:
+                    process.stdin.write(json.dumps(payload) + "\n")
+                    process.stdin.flush()
+                    sent.put(None)
+                except Exception as exc:
+                    sent.put(exc)
+
+            threading.Thread(target=send, daemon=True).start()
             try:
-                line = self.lines.get(timeout=self.timeout)
+                error = sent.get(timeout=max(0, deadline - time.monotonic()))
+                if error is not None:
+                    raise error
+                line = self.lines.get(timeout=max(0, deadline - time.monotonic()))
             except queue.Empty as exc:
                 raise TimeoutError("Gateway request timeout") from exc
             if line is None:

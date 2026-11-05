@@ -49,3 +49,13 @@ def test_gateway_times_out_and_recovers():
         assert gateway.ask(job("ok"))["ok"]
     finally:
         gateway.close()
+
+
+def test_gateway_times_out_when_child_never_reads():
+    gateway = Gateway(Path.cwd(), [sys.executable, "-u", "-c", "import time; time.sleep(30)"], timeout=0.2)
+    try:
+        reply = gateway.ask({"state": {"data": "x" * 1000000}, "questions": {}})
+        assert reply["error_name"] == "TimeoutError"
+        assert gateway.process is None
+    finally:
+        gateway.close()
