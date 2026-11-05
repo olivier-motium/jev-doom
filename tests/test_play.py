@@ -90,3 +90,22 @@ def test_held_out_play(play, map_name, seed, delay):
             sort_keys=True,
         ),
     )
+
+
+def test_reply_replaces_fallback_fire_choice(play):
+    """A fresh reply can allow fire after a local fallback held it."""
+    run = play(Case("order_fallback", map="MAP02", seed=41, delay=20, order_at=30))
+    continuations = {
+        event["request"]
+        for event in run.events
+        if event["type"] == "tactic_continue" and event["previous_selector"] == "local fallback"
+    }
+    matches = [
+        record
+        for record in run.records()
+        if record["id"] in continuations
+        and record["response"]["answers"].get("fire", {}).get("choice") == "allow"
+        and record.get("option", {}).get("controls", {}).get("trigger") == "fire"
+    ]
+    assert matches, "run did not reach a fallback continuation with fire allowed"
+    assert all(record["composed_intent"]["trigger"] == "fire" for record in matches)

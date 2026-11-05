@@ -940,6 +940,7 @@ class Run:
                     < active["option"]["expiry_seconds"]
                 ):
                     # Same option re-selected inside its window: one pending prediction continues against the original before-state.
+                    previous_selector = active["selector"]
                     active["request"] = job["id"]
                     active["selector"] = self.config["controller"]
                     active["rubrics"] = picks
@@ -947,13 +948,26 @@ class Run:
                     self.last_action["source_request"] = job["id"]
                     if "dodge" in picks:
                         self.last_action["dodge"] = picks["dodge"]
-                    if picks.get("fire") == "hold":
-                        self.last_action["trigger"] = "hold_fire"
+                        active["option"]["controls"]["dodge"] = picks["dodge"]
+                    if "fire" in picks:
+                        requested_option = next(
+                            option
+                            for option in job["state"]["tactic_candidates"]
+                            if option["id"] == selected
+                        )
+                        trigger = (
+                            "hold_fire"
+                            if picks["fire"] == "hold"
+                            else requested_option["controls"]["trigger"]
+                        )
+                        self.last_action["trigger"] = trigger
+                        active["option"]["controls"]["trigger"] = trigger
                     self.tactic_continuations += 1
                     self.log(
                         "tactic_continue",
                         request=job["id"],
                         tactic=selected,
+                        previous_selector=previous_selector,
                         started_tick=active["started_tick"],
                         game_tick=self.sim_ticks,
                     )
