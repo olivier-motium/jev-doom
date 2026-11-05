@@ -105,3 +105,26 @@ def category(name):
     if any(x in name for x in ("Ball", "Rocket", "Plasma")):
         return "projectile"
     return None
+
+
+VARIABLES = (
+    "POSITION_X",
+    "POSITION_Y",
+    "POSITION_Z",
+    "ANGLE",
+    "HEALTH",
+    "ARMOR",
+    "SELECTED_WEAPON",
+    "SELECTED_WEAPON_AMMO",
+    "KILLCOUNT",
+    "ITEMCOUNT",
+    "SECRETCOUNT",
+    "HITCOUNT",
+    "DAMAGECOUNT",
+    "DAMAGE_TAKEN",
+    "HITS_TAKEN",
+    "VELOCITY_X",
+    "VELOCITY_Y",
+    *(f"AMMO{i}" for i in range(1, 8)),
+    *(f"WEAPON{i}" for i in range(1, 8)),
+)

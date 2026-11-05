@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import io
+from importlib.metadata import PackageNotFoundError, version
 import json
 import math
 import os
@@ -20,7 +21,6 @@ from jevdoom.adapters.gateway import Gateway
 from jevdoom.adapters.files import FileStore
 from jevdoom.adapters.snapshot import SnapshotView
 from jevdoom.adapters.decider import AsyncDecider
-from jevdoom.adapters.vizdoom_engine import VERSION, VizdoomEngine
 from jevdoom.ports import end_reason
 from jevdoom.core.protocol import state_for_model, validate_answers
 from jevdoom.core.perception import observe_entities
@@ -66,9 +66,13 @@ class Run:
         self.error = None
         self.order = "Survive and advance through the level. Defeat visible threats, collect useful resources, explore unvisited routes, open doors and reach the exit."
         self.order_rev = 0
+        try:
+            engine_version = version("vizdoom")
+        except PackageNotFoundError:
+            engine_version = "unavailable"
         self.config = dict(
             game="Freedoom Phase 2",
-            engine=f"ViZDoom {VERSION}",
+            engine=f"ViZDoom {engine_version}",
             map="MAP01",
             skill=3,
             seed=17,
@@ -127,7 +131,11 @@ class Run:
         self.omitted_tactics = []
         self.tactic_outcomes = deque(maxlen=12)
         self.control_rev = 0
-        self.engine = engine or VizdoomEngine(ROOT / "assets/freedoom2.wad")
+        if engine is None:
+            from jevdoom.adapters.vizdoom_engine import VizdoomEngine
+
+            engine = VizdoomEngine(ROOT / "assets/freedoom2.wad")
+        self.engine = engine
         self.decider = decider or AsyncDecider(Gateway(ROOT))
         self.engine_thread = threading.Thread(target=self.engine_loop, daemon=True)
         self.engine_thread.start()

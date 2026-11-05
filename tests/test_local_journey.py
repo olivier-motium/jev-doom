@@ -7,7 +7,7 @@ import numpy as np
 
 from conftest import MemoryStore
 from jevdoom.adapters.local import LocalDecider
-from jevdoom.adapters.vizdoom_engine import VARIABLES
+from jevdoom.core.catalog import VARIABLES
 from jevdoom.adapters.web import create_app
 from jevdoom.ports import Frame, Step
 from jevdoom.run import Run

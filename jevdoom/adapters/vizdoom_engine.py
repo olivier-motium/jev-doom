@@ -4,31 +4,10 @@ from types import SimpleNamespace
 
 import vizdoom as vzd
 
-from jevdoom.core.catalog import BUTTONS
+from jevdoom.core.catalog import BUTTONS, VARIABLES
 from jevdoom.ports import Frame, Step
 
 VERSION = vzd.__version__
-VARIABLES = (
-    "POSITION_X",
-    "POSITION_Y",
-    "POSITION_Z",
-    "ANGLE",
-    "HEALTH",
-    "ARMOR",
-    "SELECTED_WEAPON",
-    "SELECTED_WEAPON_AMMO",
-    "KILLCOUNT",
-    "ITEMCOUNT",
-    "SECRETCOUNT",
-    "HITCOUNT",
-    "DAMAGECOUNT",
-    "DAMAGE_TAKEN",
-    "HITS_TAKEN",
-    "VELOCITY_X",
-    "VELOCITY_Y",
-    *(f"AMMO{i}" for i in range(1, 8)),
-    *(f"WEAPON{i}" for i in range(1, 8)),
-)
 
 
 def fields(source, names):

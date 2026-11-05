@@ -2,6 +2,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip("vizdoom")
+
 from jevdoom.adapters import vizdoom_engine
 from jevdoom.ports import end_reason
 
