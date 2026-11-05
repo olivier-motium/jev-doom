@@ -1,0 +1,77 @@
+"""Exercise the engine contract with a fake native game."""
+
+from types import SimpleNamespace
+
+from jevdoom.adapters import vizdoom_engine
+from jevdoom.ports import end_reason
+
+
+class FakeGame:
+    def __init__(self):
+        self.done = False
+        self.dead = False
+        self.frame = SimpleNamespace(
+            tic=5,
+            labels=[SimpleNamespace(object_id=3, width=4, height=5)],
+            objects=[
+                SimpleNamespace(
+                    name="DoomImp",
+                    id=3,
+                    position_x=10,
+                    position_y=20,
+                    position_z=0,
+                    velocity_x=0,
+                    velocity_y=0,
+                )
+            ],
+            sectors=[SimpleNamespace(floor_height=0, ceiling_height=128)],
+            depth_buffer=None,
+            screen_buffer=bytearray(b"abc"),
+        )
+
+    def __getattr__(self, name):
+        if name.startswith("set_") or name in ("init", "new_episode", "close"):
+            return lambda *args: None
+        raise AttributeError(name)
+
+    def get_state(self):
+        return self.frame
+
+    def get_game_variable(self, name):
+        return 42
+
+    def make_action(self, buttons, ticks):
+        self.done = True
+        self.dead = True
+
+    def is_episode_finished(self):
+        return self.done
+
+    def is_player_dead(self):
+        return self.dead
+
+    def is_episode_timeout_reached(self):
+        return False
+
+    def get_last_reward(self):
+        return 0
+
+    def get_total_reward(self):
+        return 0
+
+    def get_map_exit_reward(self):
+        return 1
+
+
+def test_frame_is_owned_and_step_reports_death(monkeypatch):
+    game = FakeGame()
+    monkeypatch.setattr(vizdoom_engine.vzd, "DoomGame", lambda: game)
+    engine = vizdoom_engine.VizdoomEngine("example.wad")
+    frame = engine.start("MAP01", 3, 17)
+    game.frame.screen_buffer[0] = 0
+    assert frame.screen_buffer == bytearray(b"abc")
+    assert frame.objects[0].name == "DoomImp"
+    step = engine.step([0] * 11)
+    assert step.terminal and step.dead
+    assert end_reason(step) == "dead"
+    engine.close()

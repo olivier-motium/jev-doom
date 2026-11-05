@@ -32,11 +32,11 @@ If your default Python is newer, use `PYTHON=python3.13 ./setup.sh`. To use a di
 
 Direct requests use `https://api.typesafe.ai/v1/systemone` with `jev-latest`. Gateway requests use AI SDK's experimental evaluation API with `typesafe-ai/jev`. Provider access, availability and billing depend on your account. The keys stay in the Python/Node server processes; the browser receives only readiness flags. Do not put private information in standing orders: game state and orders are sent to the selected provider.
 
-The default run lasts **90 seconds**. Pause, stop, change orders, switch maps between runs, or select the coherent-tactics controller. Fixed tactics use a deterministic selector but still make timing calls; that mode is not an unpaid demo.
+The default run lasts **90 seconds**. The default controller is **Local rule, no model**: it needs no API key and makes no provider calls. Choose Jev for model decisions. Pause, stop, change orders, or switch maps between runs.
 
 ## Spending and local data
 
-The default **$15 cumulative charged-or-reserved cap** covers both providers, including provider checks, and persists across restarts in `runs/budget.json`. Each request reserves $0.05. When a valid reported cost arrives, it replaces the reservation. Unknown costs keep the reservation; launch-price estimates never replace it. The cap can therefore stop a run before $15 has actually been billed. The time selection is a maximum, not a guarantee: a fresh budget allows at most 300 unknown-cost requests, including checks, and high call frequency can exhaust it sooner. A request could cost more than its reservation, so also configure provider account limits.
+The default **$15 cumulative charged-or-reserved cap** covers both providers, including provider checks, and persists across restarts in `runs/budget.json`. Each Jev request reserves $0.05. When a valid reported cost arrives, it replaces the reservation. Unknown costs keep the reservation; launch-price estimates never replace it. The cap can therefore stop a run before $15 has actually been billed. The time selection is a maximum, not a guarantee: a fresh budget allows at most 300 unknown-cost requests, including checks, and high call frequency can exhaust it sooner. A request could cost more than its reservation, so also configure provider account limits.
 
 Change `JEV_BUDGET_USD` in `.env` and restart to change the cap. Run traces and replies stay in the ignored `runs/` directory. Keep the budget file if you want spending continuity. No requests are made until you click a billed action.
 
@@ -48,7 +48,7 @@ The engine runs at 35 Hz. Real-time mode keeps advancing while normal requests a
 
 ## Architecture
 
-`server.py` serves a loopback-only FastAPI dashboard. `harness.py` owns the ViZDoom engine and a serial provider worker. `navigation.py` builds navigation observations and paths. `tactics.py` constructs and measures options. `gateway.mjs` adapts both provider APIs. `index.html` polls state and displays the MJPEG stream. Provider replies are validated before use.
+`jevdoom/app.py` starts the local application. The `jevdoom/core` package builds observations, paths, tactics and controls. Runtime adapters own the engine, storage, dashboard and provider gateway. `gateway.mjs` connects to Jev providers. The dashboard polls state and displays an MJPEG stream. Provider replies are validated before use.
 
 **Vercel support means AI Gateway access, not hosting this application on Vercel.** The native engine, long-lived process and local files require a local machine or a suitably managed server. This release binds only to loopback and has no multi-user authentication. Do not expose it directly to the internet.
 

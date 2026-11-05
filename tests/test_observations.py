@@ -5,6 +5,7 @@ from, the Navigator state, and what state_for_model, build_menu, measure, tactic
 validate_answers returned at that moment.
 """
 
+import copy
 import json
 
 import pytest
@@ -19,13 +20,13 @@ def navigator():
     """A fresh Navigator per map, built once; each test restores its own recorded state."""
     if not WAD.exists():
         pytest.skip("run ./setup.sh first: the fixtures need assets/freedoom2.wad")
-    from navigation import Navigator
+    from jevdoom.core.navigation import Navigator
 
     built = {}
 
     def get(map_name):
         if map_name not in built:
-            built[map_name] = Navigator(WAD, map_name)
+            built[map_name] = Navigator(WAD.read_bytes(), map_name)
         return built[map_name]
 
     return get
@@ -37,16 +38,22 @@ def test_there_are_twelve_fixtures():
 
 @pytest.mark.parametrize("path", FIXTURES, ids=[path.stem for path in FIXTURES])
 def test_decision_functions_repeat_the_recording(path, navigator):
-    from harness import Harness
-    from tactics import build_menu, measure, tactic_questions
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu, measure, tactic_questions
 
     fixture = json.loads(path.read_text())
     expected = fixture["expected"]
     nav = navigator(fixture["map"])
     restore_nav(nav, fixture["nav"])
 
-    state = Harness.state_for_model(model_context(fixture["harness"]))
-    assert normal(state) == expected["state"]
+    state = Run.state_for_model(model_context(fixture["harness"]))
+    recorded_state = copy.deepcopy(expected["state"])
+    recorded_state["measurement_context"].pop("lifts")
+    recorded_state.get("survival", {}).pop("escape_guard", None)
+    recorded_state.get("survival", {}).pop("active_escape", None)
+    assert normal(state) == recorded_state
+    assert "lifts" not in state["measurement_context"]
+    assert "escape_guard" not in state.get("survival", {})
 
     menu, omitted = build_menu(state, nav)
     assert normal(menu) == expected["menu"]
@@ -84,13 +91,13 @@ def point_off_floor(nav, here, gap):
 def test_combat_route_must_end_within_32_units(navigator):
     """tactics.py:40: a visible enemy whose route ends more than 32 units short of it is fought
     from where the player stands; a nearer one is walked to."""
-    from harness import Harness
-    from tactics import build_menu
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu
 
     fixture = json.loads((GOLDEN / "observations" / "map01_seed17-request077.json").read_text())
     nav = navigator(fixture["map"])
     restore_nav(nav, fixture["nav"])
-    state = Harness.state_for_model(model_context(fixture["harness"]))
+    state = Run.state_for_model(model_context(fixture["harness"]))
     here = [state["player"]["x"], state["player"]["y"]]
     for gap, move in ((28, "destination"), (40, "hold")):
         spot = point_off_floor(nav, here, gap)

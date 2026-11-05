@@ -2,9 +2,9 @@
 
 import math
 from shapely.geometry import LineString
-from navigation import dist
+from .geometry import dist
 
-MODES = ("semantic_tactics",)
+MODES = ("semantic_tactics", "local")
 
 
 def route_length(path):

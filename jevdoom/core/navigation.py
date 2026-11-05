@@ -4,6 +4,7 @@ import struct
 import math
 import heapq
 from collections import defaultdict
+from .geometry import dist
 from shapely.geometry import LineString, Point, MultiPoint, box, GeometryCollection
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
@@ -13,12 +14,7 @@ STEP = 24
 PLAYER_RADIUS = 16
 
 
-def dist(a, b):
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-def read_wad(path, mapname):
-    data = open(path, "rb").read()
+def read_wad(data, mapname):
     _, n, off = struct.unpack_from("<4sii", data)
     lumps = []
     for i in range(n):
@@ -51,7 +47,7 @@ def read_wad(path, mapname):
 
 
 class Navigator:
-    def __init__(self, wad, mapname):
+    def __init__(self, wad_bytes, mapname):
         # Discovery, walls, floor cells, heights and line identity come only from what the player has seen. The WAD answers two observed-point questions only: which sector a seen floor point lies in, and which wall face a view ray touched.
         self.observed_lines = {}
         self.observed_heights = {}
@@ -67,7 +63,7 @@ class Navigator:
         self._blocked_prep = prep(self._observed_blocked)
         self.obs_cells = {}
         self._cell_sector_cache = {}
-        self.lines = read_wad(wad, mapname)
+        self.lines = read_wad(wad_bytes, mapname)
         # Sector polygons answer which sector a seen floor point lies in; nothing else of the static map is used.
         grouped = defaultdict(list)
         for line in self.lines:

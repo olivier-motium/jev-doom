@@ -4,8 +4,6 @@ a provider failure with recovery, and a run that ends in death.
 All but the provider failure are pinned like golden runs. Recovery is checked by its events.
 """
 
-import json
-
 import pytest
 from conftest import ORDER_TEXT, Case, check_golden, require_hash_seed
 
@@ -68,7 +66,7 @@ def test_run_ends_in_death(play):
     run = play(Case("map02_seed25_skill5", map="MAP02", seed=25, skill=5))
     check_golden("map02_seed25_skill5", run)
     h = run.harness
-    result = json.loads((h.run_dir / "result.json").read_text())
+    result = h.store.result
     assert (h.status, result["reason"]) == ("dead", "dead")
     assert result["terminal_evidence"]["dead"]
     assert result["player"]["health"] <= 0

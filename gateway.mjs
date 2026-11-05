@@ -8,7 +8,7 @@ for await (const line of readline.createInterface({input:process.stdin,crlfDelay
  const start=performance.now();let req,signal,provider='gateway',endpoint='https://ai-gateway.vercel.sh/v4/ai/evaluation-model',sent_at=new Date().toISOString();
  try {
   req=JSON.parse(line);provider=req.provider??'gateway';
-  if(Buffer.byteLength(line)>48000||Object.keys(req.questions).length>12)throw Error('Request bound exceeded');
+  if(Object.keys(req.questions).length>12)throw Error('Request bound exceeded');
   signal=AbortSignal.timeout(20000);
   if(provider==='typesafe'){
    endpoint=DIRECT_ENDPOINT;
@@ -26,5 +26,5 @@ for await (const line of readline.createInterface({input:process.stdin,crlfDelay
    const cost=r.providerMetadata?.gateway?.cost;
    console.log(JSON.stringify({ok:true,provider,endpoint,sent_at,received_at:new Date().toISOString(),answers:r.answers,rounding:r.rounding??null,usage:r.usage??null,confidence:r.providerMetadata?.typesafe?.confidence??null,cost_usd:cost!=null&&Number.isFinite(Number(cost))?Number(cost):null,model:r.response?.modelId??'typesafe-ai/jev',elapsed_ms:performance.now()-start}));
   }else throw Error('Unknown provider');
- }catch(e){console.log(JSON.stringify({ok:false,provider,endpoint,sent_at,received_at:new Date().toISOString(),error:redact(e.message).slice(0,500),invalid_answers:e.name==='AI_InvalidResponseDataError'&&e.data?JSON.parse(redact(JSON.stringify(e.data))):null,error_name:e.name??null,cause_name:e.cause?.name??null,client_aborted:signal?.aborted??false,abort_reason_name:signal?.reason?.name??null,client_timeout_ms:20000,status:e.statusCode??null,elapsed_ms:performance.now()-start}));}
+ }catch(e){let invalid=null;try{if(e.name==='AI_InvalidResponseDataError'&&e.data)invalid=JSON.parse(redact(JSON.stringify(e.data)));}catch{}console.log(JSON.stringify({ok:false,provider,endpoint,sent_at,received_at:new Date().toISOString(),error:redact(e.message).slice(0,500),invalid_answers:invalid,error_name:e.name??null,cause_name:e.cause?.name??null,client_aborted:signal?.aborted??false,abort_reason_name:signal?.reason?.name??null,client_timeout_ms:20000,status:e.statusCode??null,elapsed_ms:performance.now()-start}));}
 }

@@ -7,174 +7,60 @@ import json
 import math
 import os
 import queue
-import subprocess
 import threading
 import time
 import traceback
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-import vizdoom as vzd
 from PIL import Image
 from shapely.geometry import LineString, Point
-from navigation import Navigator, dist
-from tactics import (
+from jevdoom.core.navigation import Navigator
+from jevdoom.adapters.gateway import Gateway
+from jevdoom.adapters.files import FileStore
+from jevdoom.adapters.snapshot import SnapshotView
+from jevdoom.adapters.decider import AsyncDecider
+from jevdoom.adapters.vizdoom_engine import VERSION, VizdoomEngine
+from jevdoom.ports import end_reason
+from jevdoom.core.protocol import state_for_model, validate_answers
+from jevdoom.core.perception import observe_entities
+from jevdoom.core.motor import calculate_motor
+from jevdoom.core.budget import blocks, reserve, settle
+from jevdoom.core.geometry import dist
+from jevdoom.core.catalog import (
+    BUTTONS,
+    EVALUATOR_FIELDS,
+    PICKUP_WEAPON_SLOTS,
+    WEAPON_NAMES,
+)
+from jevdoom.core.tactics import (
     MODES,
     build_menu,
     tactic_questions,
     measure,
 )
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "runs"
 RUNS.mkdir(exist_ok=True)
 RESERVE = 0.05
 CAP = float(os.getenv("JEV_BUDGET_USD", "15.00"))
 if not math.isfinite(CAP) or CAP < RESERVE:
     raise ValueError("JEV_BUDGET_USD must be finite and at least 0.05")
-EVALUATOR_FIELDS = (
-    "hits",
-    "damage_dealt",
-    "kills",
-    "items",
-    "secrets",
-    "damage_taken",
-    "hits_taken",
-)
 CAP_ORDER = "Both providers share the cumulative charged-or-reserved budget. Unknown costs retain a 0.05 USD reservation."
-BUTTONS = [
-    "MOVE_FORWARD_BACKWARD_DELTA",
-    "MOVE_LEFT_RIGHT_DELTA",
-    "TURN_LEFT_RIGHT_DELTA",
-    "ATTACK",
-    "USE",
-    "SELECT_WEAPON2",
-    "SELECT_WEAPON3",
-    "SELECT_WEAPON4",
-    "SELECT_WEAPON5",
-    "SELECT_WEAPON6",
-    "SELECT_WEAPON7",
-]
-MONSTERS = {
-    "DoomImp",
-    "Zombieman",
-    "ShotgunGuy",
-    "ChaingunGuy",
-    "Demon",
-    "Spectre",
-    "Cacodemon",
-    "BaronOfHell",
-    "HellKnight",
-    "LostSoul",
-    "Revenant",
-    "Fatso",
-    "Arachnotron",
-    "Archvile",
-    "PainElemental",
-    "Cyberdemon",
-    "SpiderMastermind",
-    "WolfensteinSS",
-}
-HEALTH = {"Stimpack", "Medikit", "HealthBonus", "Soulsphere", "Megasphere", "Berserk"}
-ARMOR = {"ArmorBonus", "GreenArmor", "BlueArmor"}
-AMMO = {
-    "Clip",
-    "ClipBox",
-    "Shell",
-    "ShellBox",
-    "RocketAmmo",
-    "RocketBox",
-    "Cell",
-    "CellPack",
-    "Backpack",
-}
-WEAPONS = {
-    "Shotgun",
-    "SuperShotgun",
-    "Chaingun",
-    "RocketLauncher",
-    "PlasmaRifle",
-    "BFG9000",
-    "Chainsaw",
-}
-KEYS = {"BlueCard", "RedCard", "YellowCard", "BlueSkull", "RedSkull", "YellowSkull"}
-WEAPON_NAMES = {
-    1: "fist",
-    2: "pistol",
-    3: "shotgun",
-    4: "chaingun",
-    5: "rocket launcher",
-    6: "plasma rifle",
-    7: "BFG",
-    8: "chainsaw",
-    9: "super shotgun",
-}
-PICKUP_WEAPON_SLOTS = {
-    "Shotgun": 3,
-    "SuperShotgun": 9,
-    "Chaingun": 4,
-    "RocketLauncher": 5,
-    "PlasmaRifle": 6,
-    "BFG9000": 7,
-    "Chainsaw": 8,
-}
-PICKUP_EFFECTS = {
-    "HealthBonus": "Only +1 health; a small bonus, not a healing kit",
-    "Stimpack": "+10 health up to100",
-    "Medikit": "+25 health up to100",
-    "Soulsphere": "+100 health up to200",
-    "Megasphere": "Set health and armor to200",
-    "Berserk": "Restore health to100 and strengthen fists",
-    "ArmorBonus": "Only +1 armor",
-    "GreenArmor": "Set armor to100",
-    "BlueArmor": "Set armor to200",
-    "Shotgun": "Acquire shotgun and some shells; much stronger than pistol at close/medium range",
-    "SuperShotgun": "Acquire double-barrel shotgun and shells; strong close range",
-    "Chaingun": "Acquire rapid-fire bullet weapon",
-    "Clip": "Bullets for pistol or chaingun",
-    "ClipBox": "50 bullets for pistol or chaingun",
-    "Shell": "4 shotgun shells",
-    "ShellBox": "20 shotgun shells",
-    "RocketAmmo": "Rocket ammunition, not pistol bullets",
-    "RocketBox": "Rocket ammunition, not pistol bullets",
-    "Cell": "Energy ammunition, not pistol bullets",
-    "CellPack": "Energy ammunition, not pistol bullets",
-}
 
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
 
 
-def angle(x):
-    return (x + 180) % 360 - 180
-
-
-def category(name):
-    if name in MONSTERS:
-        return "enemy"
-    if name == "ExplosiveBarrel":
-        return "obstacle"
-    if name in HEALTH:
-        return "health"
-    if name in ARMOR:
-        return "armor"
-    if name in AMMO:
-        return "ammo"
-    if name in WEAPONS:
-        return "weapon"
-    if name in KEYS:
-        return "key"
-    if any(x in name for x in ("Ball", "Rocket", "Plasma")):
-        return "projectile"
-    return None
-
-
-class Harness:
-    def __init__(self):
+class Run:
+    def __init__(self, engine=None, decider=None, store=None, view=None, clock=None, sleep=None):
+        self.clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
+        self.store = store or FileStore(RUNS)
+        self.view_port = view or SnapshotView()
         self.commands = queue.Queue()
-        self.replies = queue.Queue()
-        self.jobs = queue.Queue(maxsize=1)
         self.lock = threading.RLock()
         self.status = "booting"
         self.error = None
@@ -182,26 +68,23 @@ class Harness:
         self.order_rev = 0
         self.config = dict(
             game="Freedoom Phase 2",
-            engine=f"ViZDoom {vzd.__version__}",
+            engine=f"ViZDoom {VERSION}",
             map="MAP01",
             skill=3,
             seed=17,
             revision="v64-observable-order",
             mode="observable",
             timing="real_time",
-            controller="semantic_tactics",
+            controller="local",
             start_type="Fresh pistol start",
-            provider="Vercel AI Gateway",
+            provider="Local rule, no model",
             provider_key="gateway",
-            model="typesafe-ai/jev",
+            model="Local rule, no model",
             budget_usd=CAP,
             assistance="Observable mode: seen floor cells and seen wall pieces only, no static map, no line specials, no lift facts out of view, no tactical assist; execution interlocks of the selected option only (fire when the faced target is visible and aligned, USE when the selected face is in reach, approach facing toward the selected face, the dodge Jev chose)",
         )
-        self.ledger_path = RUNS / "budget.json"
-        self.ledger = (
-            json.loads(self.ledger_path.read_text())
-            if self.ledger_path.exists()
-            else dict(charged_usd=0, reported_usd=0, calls=0, unknown_cost_calls=0)
+        self.ledger = self.store.load_ledger() or dict(
+            charged_usd=0, reported_usd=0, calls=0, unknown_cost_calls=0
         )
         self.provider_ledgers = self.ledger.setdefault(
             "providers",
@@ -222,10 +105,11 @@ class Harness:
             self.save_budget()
         self.observation = {}
         self.records = deque(maxlen=500)
-        self.latencies = []
+        self.latencies = deque(maxlen=300)
         self.jpeg = b""
         self.map = {}
         self.busy = False
+        self.pending_billed = False
         self.episode = 0
         self.seq = 0
         self.objective = None
@@ -243,23 +127,19 @@ class Harness:
         self.omitted_tactics = []
         self.tactic_outcomes = deque(maxlen=12)
         self.control_rev = 0
-        self.worker = threading.Thread(target=self.provider_loop, daemon=True)
-        self.worker.start()
-        self.engine = threading.Thread(target=self.engine_loop, daemon=True)
-        self.engine.start()
+        self.engine = engine or VizdoomEngine(ROOT / "assets/freedoom2.wad")
+        self.decider = decider or AsyncDecider(Gateway(ROOT))
+        self.engine_thread = threading.Thread(target=self.engine_loop, daemon=True)
+        self.engine_thread.start()
 
     def log(self, type, **data):
         event = dict(type=type, at=utc(), episode=self.episode)
         event.update(data)
-        if hasattr(self, "trace"):
-            self.trace.write(json.dumps(event, separators=(",", ":")) + "\n")
-            self.trace.flush()
+        self.store.append_trace(event)
         return event
 
     def save_budget(self):
-        tmp = self.ledger_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.ledger, indent=2))
-        tmp.replace(self.ledger_path)
+        self.store.save_ledger(self.ledger)
 
     def invalidate_objective(self, reason):
         self.end_tactic("invalidated")
@@ -272,80 +152,9 @@ class Harness:
         self.objective = None
         self.control_rev += 1
 
-    def provider_loop(self):
-        proc = None
-        while not self.stop_event.is_set():
-            job = self.jobs.get()
-            if job is None:
-                break
-            try:
-                if proc is None:
-                    proc = subprocess.Popen(
-                        ["node", str(ROOT / "gateway.mjs")],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        bufsize=1,
-                        cwd=ROOT,
-                    )
-                self.gateway_process = proc
-                start = time.monotonic()
-                proc.stdin.write(
-                    json.dumps(
-                        {
-                            "provider": job.get("provider", "gateway"),
-                            "state": job["state"],
-                            "questions": job["questions"],
-                        }
-                    )
-                    + "\n"
-                )
-                proc.stdin.flush()
-                line = proc.stdout.readline()
-                if not line:
-                    raise RuntimeError("Gateway adapter exited")
-                result = json.loads(line)
-                result["end_to_end_ms"] = (time.monotonic() - start) * 1000
-            except Exception as e:
-                result = {"ok": False, "error": str(e)[:300], "cost_usd": None}
-            with self.lock:
-                self.log(
-                    "provider_return",
-                    request=job["id"],
-                    request_episode=job["episode"],
-                    response=result,
-                )
-            self.replies.put((job, result))
-        if proc:
-            proc.terminate()
-
     def new_game(self):
-        if hasattr(self, "game"):
-            self.game.close()
-        self.game = vzd.DoomGame()
-        g = self.game
-        g.set_doom_game_path(str(ROOT / "assets/freedoom2.wad"))
-        g.set_doom_map(self.config["map"].lower())
-        g.set_doom_skill(self.config["skill"])
-        g.set_seed(self.config["seed"])
-        g.set_window_visible(False)
-        g.set_sound_enabled(False)
-        g.set_screen_format(vzd.ScreenFormat.RGB24)
-        g.set_screen_resolution(vzd.ScreenResolution.RES_640X480)
-        g.set_labels_buffer_enabled(True)
-        g.set_depth_buffer_enabled(True)
-        g.set_objects_info_enabled(True)
-        g.set_sectors_info_enabled(True)
-        g.set_render_hud(True)
-        g.set_render_weapon(True)
-        g.set_available_buttons([getattr(vzd.Button, b) for b in BUTTONS])
-        g.set_mode(vzd.Mode.PLAYER)
-        g.set_episode_timeout(35 * 600)
-        g.set_map_exit_reward(1)
-        g.init()
-        g.new_episode()
-        self.nav = Navigator(ROOT / "assets/freedoom2.wad", self.config["map"])
+        self.engine.start(self.config["map"], self.config["skill"], self.config["seed"])
+        self.nav = Navigator((ROOT / "assets/freedoom2.wad").read_bytes(), self.config["map"])
         self.memory = {}
         self.previous_health = 100
         self.last_damage_tick = -1000
@@ -357,7 +166,7 @@ class Harness:
         self.controls = {}
         self.seq = 0
         self.sim_ticks = 0
-        self.start_wall = time.monotonic()
+        self.start_wall = self.clock()
         self.last_dispatch = 0
         self.last_nav = 0
         self.distance = 0
@@ -399,20 +208,31 @@ class Harness:
         if provider not in ("gateway", "typesafe"):
             self.error = "Unknown provider"
             return
-        if not self.provider_health[provider]:
+        controller = args.get("controller", self.config.get("controller", "semantic_tactics"))
+        if controller not in MODES:
+            self.error = "Unknown controller"
+            return
+        if controller != "local" and not self.provider_health[provider]:
             self.error = "Click Check provider before starting a run"
             return
         self.config.update(
             provider_key=provider,
-            provider="TypeSafe direct" if provider == "typesafe" else "Vercel AI Gateway",
-            model="jev-latest" if provider == "typesafe" else "typesafe-ai/jev",
+            provider=(
+                "Local rule, no model"
+                if controller == "local"
+                else "TypeSafe direct"
+                if provider == "typesafe"
+                else "Vercel AI Gateway"
+            ),
+            model=(
+                "Local rule, no model"
+                if controller == "local"
+                else "jev-latest"
+                if provider == "typesafe"
+                else "typesafe-ai/jev"
+            ),
         )
-        self.config["controller"] = args.get(
-            "controller", self.config.get("controller", "semantic_tactics")
-        )
-        if self.config["controller"] not in MODES:
-            self.error = "Unknown controller"
-            return
+        self.config["controller"] = controller
         self.config["map"] = selected_map
         seed = args.get("seed", 17)
         skill = args.get("skill", 3)
@@ -452,13 +272,8 @@ class Harness:
         self.episode += 1
         self.max_seconds = min(600, max(5, float(args.get("seconds", 90))))
         self.config["revision"] = args.get("revision", self.config["revision"])[:40]
-        self.run_dir = RUNS / (
-            datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + self.config["revision"]
-        )
-        self.run_dir.mkdir(exist_ok=True)
-        if hasattr(self, "trace"):
-            self.trace.close()
-        self.trace = open(self.run_dir / "trace.jsonl", "a")
+        name = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + self.config["revision"]
+        self.run_dir = self.store.open_run(name)
         self.run_budget_start = copy.deepcopy(self.ledger)
         self.log(
             "episode_start",
@@ -471,13 +286,12 @@ class Harness:
         self.error = None
 
     def capture(self):
-        s = self.game.get_state()
+        s = self.engine.frame()
         if s is None:
             return
-        g = self.game
 
         def var(name):
-            return float(g.get_game_variable(getattr(vzd.GameVariable, name)))
+            return s.variables[name]
 
         p = dict(
             x=round(var("POSITION_X"), 1),
@@ -530,69 +344,7 @@ class Harness:
         if self.last_position:
             self.distance += dist(pos, self.last_position)
         self.last_position = pos
-        label_px = {label.object_id: int(label.width * label.height) for label in s.labels}
-        visible = {oid for oid, a in label_px.items() if a >= 3}
-        entities = []
-        seen = set()
-        # Map kill count does not identify a victim or prove player attribution.
-        for o in s.objects:
-            kind = category(o.name)
-            id = f"{o.name}_{o.id}"
-            if not kind or o.id not in visible:
-                continue
-            entity = dict(
-                id=id,
-                label=f"{o.name} {o.id}",
-                kind=kind,
-                x=round(o.position_x, 1),
-                y=round(o.position_y, 1),
-                z=round(o.position_z, 1),
-                seen_tick=s.tic,
-                visible=True,
-                label_px=label_px.get(o.id),
-            )
-            if kind == "projectile":
-                entity["velocity"] = [round(o.velocity_x * 35, 1), round(o.velocity_y * 35, 1)]
-            self.memory[id] = entity
-            seen.add(id)
-        # Nearby unseen pickups are no longer actionable; this does not prove collection.
-        for id, e in list(self.memory.items()):
-            if (
-                e["kind"] not in ("enemy", "obstacle")
-                and id not in seen
-                and dist([e["x"], e["y"]], pos) < 40
-            ):
-                self.memory.pop(id, None)
-                continue
-            en = copy.copy(e)
-            en["visible"] = id in seen
-            en["last_seen_seconds"] = round((s.tic - e["seen_tick"]) / 35, 1)
-            en["distance"] = round(dist([e["x"], e["y"]], pos))
-            en["band"] = (
-                "contact"
-                if en["distance"] < 64
-                else "close"
-                if en["distance"] < 256
-                else "medium"
-                if en["distance"] < 768
-                else "far"
-            )
-            en["bearing"] = round(
-                angle(math.degrees(math.atan2(e["y"] - p["y"], e["x"] - p["x"])) - p["facing"]), 1
-            )
-            if en["kind"] == "projectile" and en.get("velocity"):
-                vx, vy = en["velocity"]
-                rx, ry = en["x"] - p["x"], en["y"] - p["y"]
-                vv = vx * vx + vy * vy
-                t = max(0, min(3, -(rx * vx + ry * vy) / vv)) if vv else None
-                en["closest_approach_seconds_if_player_stays"] = (
-                    round(t, 2) if t is not None else None
-                )
-                en["closest_approach_units_if_player_stays"] = (
-                    round(math.hypot(rx + vx * t, ry + vy * t)) if t is not None else None
-                )
-            if en["last_seen_seconds"] < 45:
-                entities.append(en)
+        self.memory, entities = observe_entities(s, p, self.memory)
         subject = (self.objective or {}).get("subject") or {}
         if (
             subject.get("kind") in ("health", "ammo", "weapon", "armor", "key")
@@ -629,7 +381,7 @@ class Harness:
                     tick=s.tic,
                     failed_attempts=self.nav.failed[attempted["id"]],
                 )
-        if time.monotonic() - self.last_nav > 0.5:
+        if self.clock() - self.last_nav > 0.5:
             depth_map = s.depth_buffer
             cols = (
                 [int(depth_map[215:226, c].min()) for c in range(0, depth_map.shape[1], 10)]
@@ -643,7 +395,7 @@ class Harness:
                     self.nav.record_heights(
                         sec, -s.sectors[sec].floor_height, s.sectors[sec].ceiling_height, s.tic
                     )
-            self.last_nav = time.monotonic()
+            self.last_nav = self.clock()
             self.map = self.nav.ui()
             self.nav_candidates = self.nav.candidates(pos)
         self.seq += 1
@@ -715,7 +467,7 @@ class Harness:
             sequence=self.seq,
             tick=s.tic,
             captured_at=utc(),
-            captured_mono=time.monotonic(),
+            captured_mono=self.clock(),
             player=p,
             enemies=[e for e in entities if e["kind"] == "enemy" and e["visible"]],
             items=[
@@ -777,99 +529,17 @@ class Harness:
         self.jpeg = buf.getvalue()
 
     def state_for_model(self):
-        """Actor context: what Jev, option generation and the motors may see. Evaluator counters are removed; outcome feedback carries statuses, not counter deltas."""
-        state = copy.deepcopy(self.observation)
-        state.pop("captured_mono", None)
-        state["objective"] = copy.deepcopy(self.objective)
-        for k in EVALUATOR_FIELDS:
-            state["player"].pop(k, None)
-        state["mode"] = "observable"
-        state["exploration_target"] = self.exploration_target
-        state["recent_tactic_outcomes"] = [
-            {k: v for k, v in o.items() if k != "measured"} for o in list(self.tactic_outcomes)[-5:]
-        ]
-        state["assumptions"] = (
-            "Structured sensing of entities currently in view with exact positions and identities; remembered entities with ages; floor cells and wall pieces only where the view has reached them; wall faces classified by the texture the player sees; heights only for sectors in view; no static map, no line specials, no lift facts out of view. Hit, damage, kill, item and secret counters are evaluator evidence and are not shown; outcome feedback carries HUD health and armor changes only."
+        return state_for_model(
+            self.observation,
+            self.objective,
+            self.exploration_target,
+            self.tactic_outcomes,
+            self.order,
+            self.order_rev,
         )
-        state["standing_order"] = self.order
-        state["order_revision"] = self.order_rev
-        state["measurement_context"] = dict(
-            distance="Doom map units; player width32. Contact<64; close64-256; medium256-768; far>=768.",
-            bearing="Relative degrees: 0ahead, positive LEFT, negative RIGHT. +90left -90right.",
-            time="35 game ticks per second. World continues during your calls. Aiming, movement and firing run simultaneously; controls persist until replaced or lease expires.",
-            aim="Vertical aim automatic. TRIGGER fire grants permission during the control lease; the motor waits until the exact FACE enemy is currently visible and aligned before firing. FACE and TRIGGER are independent choices in this call. Hitscan stops at first solid obstruction.",
-            physics="Max running speed about292 map units/second. Destination navigation follows collision-aware geometry. A gun must face its target to hit.",
-            uncertainty="Entity health and keys unknown. remembered positions can be stale.",
-            lifts="lifts lists lift sectors with their current floor and low/high positions. A route may cross a lift; the motor calls the lift and rides it as disclosed assistance.",
-        )
-        state["weapon_context"] = {
-            "pistol": "Hitscan, one bullet per shot. Accurate at modest range when aimed.",
-            "shotgun": "Hitscan, seven pellets, about1shot/second. Strong under500units; pellet spread wastes shots at long range.",
-            "rocket launcher": "Explosive projectile: dangerous to the player at contact range.",
-            "fist": "Melee requires contact range.",
-        }
-        state["obstacle_context"] = (
-            "Observed explosive barrels block movement and can explode if shot. Navigation routes around remembered barrel positions; destruction is unknown until observations change. Avoid firing through a barrel near the player."
-        )
-        state["strategy"] = (
-            "Reach the exit alive. Fight visible threats while moving if useful. Use pistol or shotgun appropriately. Do not chase unneeded pickups. Explore distinct frontiers; avoid repeatedly failed destinations. Interact with doors and switches when close. Model chooses destinations; geometry supplies waypoints."
-        )
-        return state
 
-    def validate_answers(self, job, r):
-        if not r.get("ok"):
-            raise ValueError(str(r.get("error", "Provider failed")))
-        if not isinstance(r.get("answers"), dict) or set(r["answers"]) != set(job["questions"]):
-            raise ValueError("Answer keys do not match the question battery")
-        decimals = (r.get("rounding") or {}).get("probabilityDecimals")
-        if decimals is not None and (type(decimals) is not int or not 0 <= decimals <= 15):
-            raise ValueError("Invalid declared probability rounding")
-        rounding_basis = "provider-declared" if decimals is not None else "exact-sum"
-        if decimals is None:
-            values = [p for a in r["answers"].values() for p in a.get("probabilities", {}).values()]
-            if values and all(
-                type(p) in (float, int)
-                and math.isfinite(p)
-                and abs(p * 100 - round(p * 100)) < 1e-8
-                for p in values
-            ):
-                decimals = 2
-                rounding_basis = "adapter assumption from observed two-decimal wire values; provider did not declare precision"
-        # A choice within one rounding unit of the maximum is a near tie under the declared or assumed precision, not a protocol violation (observed three times on 18 September: 0.42/0.43, 0.38/0.39, 0.47/0.48).
-        argmax_tolerance = 0 if decimals is None else 10**-decimals
-        r["validation"] = dict(
-            probability_decimals=decimals,
-            rounding_basis=rounding_basis,
-            probabilities_rewritten=False,
-            argmax_tolerance=argmax_tolerance,
-            near_tie_accepted=[],
-        )
-        rounding_error = 0 if decimals is None else 0.5 * 10**-decimals
-        for key, q in job["questions"].items():
-            ans = r["answers"][key]
-            probs = ans["probabilities"]
-            if (
-                ans.get("type") != q["type"]
-                or ans["choice"] not in q["criteria"]
-                or set(probs) != set(q["criteria"])
-                or any(
-                    type(p) not in (float, int) or not math.isfinite(p) or p < 0 or p > 1
-                    for p in probs.values()
-                )
-                or abs(sum(probs.values()) - 1) > 1e-6 + len(probs) * rounding_error
-            ):
-                raise ValueError("Invalid Choice distribution: " + key)
-            if max(probs.values()) > probs[ans["choice"]] + argmax_tolerance + 1e-9:
-                raise ValueError("Choice is not a highest-probability option: " + key)
-            if max(probs.values()) > probs[ans["choice"]] + 1e-9:
-                r["validation"]["near_tie_accepted"].append(
-                    dict(
-                        question=key,
-                        choice=ans["choice"],
-                        choice_probability=probs[ans["choice"]],
-                        maximum=max(probs.values()),
-                    )
-                )
+    def validate_answers(self, job, reply):
+        return validate_answers(job, reply)
 
     def end_tactic(self, reason):
         active = self.active_tactic
@@ -895,14 +565,11 @@ class Harness:
 
     def cap_blocks(self):
         """Reserve the next call against the shared cumulative cap."""
-        return self.ledger["charged_usd"] + RESERVE > CAP
+        return blocks(self.ledger, CAP, RESERVE)
 
     def reserve_call(self, provider):
         account = self.provider_ledgers[provider]
-        self.ledger["charged_usd"] += RESERVE
-        self.ledger["calls"] += 1
-        account["charged_usd"] += RESERVE
-        account["calls"] += 1
+        reserve(self.ledger, account, RESERVE)
         self.save_budget()
 
     def request_probe(self, args):
@@ -929,7 +596,7 @@ class Harness:
             return
         self.reserve_call(provider)
         self.call_seq += 1
-        now = time.monotonic()
+        now = self.clock()
         job = dict(
             provider=provider,
             id=self.call_seq,
@@ -948,13 +615,14 @@ class Harness:
                 json.dumps(questions, sort_keys=True).encode()
             ).hexdigest(),
         )
-        self.jobs.put(job)
+        self.decider.submit(job)
         self.busy = True
+        self.pending_billed = True
 
     def dispatch(self):
         if self.busy or self.status not in ("warming", "running"):
             return
-        now = time.monotonic()
+        now = self.clock()
         if now - self.last_dispatch < 0.12:
             return
         phase = "tactic"
@@ -966,13 +634,15 @@ class Harness:
         if len(json.dumps({"state": state, "questions": questions}).encode()) > 48000:
             self.finish("request_limit")
             return
-        if self.cap_blocks():
-            self.finish("budget_limit")
-            return
-        self.reserve_call(self.config.get("provider_key", "gateway"))
+        if self.config["controller"] != "local":
+            if self.cap_blocks():
+                self.finish("budget_limit")
+                return
+            self.reserve_call(self.config.get("provider_key", "gateway"))
         self.call_seq += 1
         job = dict(
             provider=self.config.get("provider_key", "gateway"),
+            controller=self.config["controller"],
             id=self.call_seq,
             episode=self.episode,
             order_rev=self.order_rev,
@@ -985,38 +655,19 @@ class Harness:
             sent_at=utc(),
         )
         self.log("request", **{k: v for k, v in job.items() if not k.endswith("_mono")})
-        self.jobs.put(job)
+        self.decider.submit(job)
         self.busy = True
+        self.pending_billed = self.config["controller"] != "local"
         self.last_dispatch = now
 
     def accept_reply(self, job, r):
         self.busy = False
-        cost = r.get("cost_usd")
+        self.pending_billed = False
         provider = job.get("provider", "gateway")
-        account = self.provider_ledgers[provider]
-        if (
-            cost is not None
-            and isinstance(cost, (float, int))
-            and math.isfinite(cost)
-            and cost >= 0
-        ):
-            self.ledger["charged_usd"] += cost - RESERVE
-            self.ledger["reported_usd"] += cost
-            account["charged_usd"] += cost - RESERVE
-            account["reported_usd"] += cost
-        else:
-            self.ledger["unknown_cost_calls"] += 1
-            account["unknown_cost_calls"] += 1
-        estimate = r.get("estimated_cost_usd")
-        if (
-            estimate is not None
-            and isinstance(estimate, (float, int))
-            and math.isfinite(estimate)
-            and estimate >= 0
-        ):
-            account["estimated_usd"] = account.get("estimated_usd", 0) + estimate
-        self.save_budget()
-        age = time.monotonic() - job["snapshot_mono"]
+        if job.get("controller") != "local":
+            settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
+            self.save_budget()
+        age = self.clock() - job["snapshot_mono"]
         self.latencies.append(r.get("elapsed_ms", 0))
         record = dict(
             provider=provider,
@@ -1044,8 +695,7 @@ class Harness:
                 questions_hash=job.get("questions_hash"),
             )
             self.probes.append(record)
-            with (RUNS / "provider-probes.jsonl").open("a") as f:
-                f.write(json.dumps(record) + "\n")
+            self.store.append_probe(record)
             self.records.append(record)
             return
         validation_error = None
@@ -1068,6 +718,7 @@ class Harness:
             transient = (
                 (validation_error and self.recovery_attempts < 2)
                 or r.get("status") in (429, 500, 502, 503, 504, 529)
+                or r.get("error_name") in ("ConnectionError", "BrokenPipeError")
                 or "timeout" in str(r.get("error", "")).lower()
             )
             if transient:
@@ -1080,9 +731,9 @@ class Harness:
                     self.pause_started is None
                     and self.config.get("timing", "real_time") == "pause_assisted"
                 ):
-                    self.pause_started = time.monotonic()
+                    self.pause_started = self.clock()
                 delay = min(60, 15 * 2 ** min(self.recovery_attempts - 1, 2))
-                self.retry_at = time.monotonic() + delay
+                self.retry_at = self.clock() + delay
                 self.error = (
                     "Jev request failed. "
                     + (
@@ -1150,7 +801,7 @@ class Harness:
                         # Same option re-selected inside its window: one pending prediction continues against the original before-state.
                         active["request"] = job["id"]
                         active["rubrics"] = picks
-                        self.last_action["committed_mono"] = time.monotonic()
+                        self.last_action["committed_mono"] = self.clock()
                         self.last_action["source_request"] = job["id"]
                         self.tactic_continuations += 1
                         self.log(
@@ -1210,7 +861,7 @@ class Harness:
                         source_request=job["id"],
                         source_tick=job["state"]["tick"],
                         control_rev=self.control_rev,
-                        committed_mono=time.monotonic(),
+                        committed_mono=self.clock(),
                         snapshot=snapshot,
                     )
                     self.active_tactic = dict(
@@ -1227,10 +878,10 @@ class Harness:
                         self.status = "running"
                         self.error = None
                         if not self.started_play:
-                            self.start_wall = time.monotonic()
+                            self.start_wall = self.clock()
                             self.started_play = True
                         if self.pause_started is not None:
-                            elapsed = time.monotonic() - self.pause_started
+                            elapsed = self.clock() - self.pause_started
                             self.paused_seconds += elapsed
                             self.pause_started = None
                             self.log(
@@ -1258,11 +909,10 @@ class Harness:
             self.result["cost_final"] = True
             self.result["pending_reservation_usd"] = 0
             self.result.update(self.episode_costs())
-            (self.run_dir / "result.json").write_text(json.dumps(self.result, indent=2))
+            self.store.write_result(self.result)
 
     def motor(self):
         values = [0] * len(BUTTONS)
-        overrides = []
         a = self.last_action
         p = self.observation.get("player", {})
         if self.status != "running" or not a:
@@ -1279,280 +929,36 @@ class Harness:
                 "reason": "Tactic execution window expired; await fresh decision",
             }
             return values
-        if time.monotonic() - a["committed_mono"] > 2:
+        if self.clock() - a["committed_mono"] > 2:
             self.controls = dict(released=True, reason="Control lease expired")
             return values
         p = copy.copy(p)
         p.update(
-            x=float(self.game.get_game_variable(vzd.GameVariable.POSITION_X)),
-            y=float(self.game.get_game_variable(vzd.GameVariable.POSITION_Y)),
-            facing=float(self.game.get_game_variable(vzd.GameVariable.ANGLE)),
+            x=self.engine.variable("POSITION_X"),
+            y=self.engine.variable("POSITION_Y"),
+            facing=self.engine.variable("ANGLE"),
         )
-        pos = [p["x"], p["y"]]
-        face = p["facing"]
-        move = a["move"]
-        destination = (a["snapshot"].get("objective") or {}).get("subject")
-        waypoint = None
-        if destination:
-            if destination.get("through"):
-                rec = self.nav.observed_lines.get(destination["id"])
-                if rec and rec.get("open_tick") is not None:
-                    # The selected door option carries its own walk-through: while the piece is seen open, the route runs to the far side of the doorway.
-                    wp = self.nav.waypoint(pos, destination["through"])
-                    if (
-                        wp
-                        and self.sim_ticks - self.stationary_since > 35
-                        and dist(
-                            pos,
-                            [
-                                rec["a"][0] + (rec["b"][0] - rec["a"][0]) / 2,
-                                rec["a"][1] + (rec["b"][1] - rec["a"][1]) / 2,
-                            ],
-                        )
-                        < 96
-                    ):
-                        # Pushed toward the doorway for a second without moving: the piece is not passable now, whatever the view said; it is a wall again until seen open.
-                        rec["open_tick"] = None
-                        self.nav._reach = None
-                        self.nav.cache.clear()
-                        self.log(
-                            "door_push_blocked",
-                            line=destination["id"],
-                            game_tick=self.sim_ticks,
-                            player=[round(p["x"], 1), round(p["y"], 1)],
-                        )
-                        wp = None
-                    if wp:
-                        destination = dict(
-                            destination,
-                            x=destination["through"][0],
-                            y=destination["through"][1],
-                            walking_through=True,
-                        )
-                        overrides.append(
-                            "Door "
-                            + destination["id"]
-                            + " seen open: walking through to its far side"
-                        )
-            waypoint = self.nav.waypoint(pos, [destination["x"], destination["y"]])
-            if (
-                move == "destination"
-                and waypoint is None
-                and dist(pos, [destination["x"], destination["y"]]) <= 160
-                and self.nav.segment_clear(pos, [destination["x"], destination["y"]])
-            ):
-                waypoint = [destination["x"], destination["y"]]
-                overrides.append("No cell route; straight line over seen clear floor")
-            if move == "destination" and waypoint is None:
-                overrides.append("Selected destination has no geometric path")
-                move = "hold"
-        if (
-            a["face"] == "path" or (destination and destination.get("walking_through"))
-        ) and waypoint:
-            face = math.degrees(math.atan2(waypoint[1] - p["y"], waypoint[0] - p["x"]))
-        elif a["face"].startswith("door_"):
-            line = next(
-                (candidate for candidate in self.nav.lines if candidate["id"] == a["face"][5:]),
-                None,
-            )
-            if line:
-                ax, ay = line["a"]
-                bx, by = line["b"]
-                dx, dy = bx - ax, by - ay
-                t = max(0, min(1, ((p["x"] - ax) * dx + (p["y"] - ay) * dy) / (dx * dx + dy * dy)))
-                tx, ty = ax + t * dx, ay + t * dy
-                face = math.degrees(math.atan2(ty - p["y"], tx - p["x"]))
-        elif a["face"].startswith("recent_"):
-            m = self.memory.get(a["face"][7:])
-            if m:
-                face = math.degrees(math.atan2(m["y"] - p["y"], m["x"] - p["x"]))
-            else:
-                overrides.append("Remembered face target no longer in memory")
-        elif a["face"] == "scan_left":
-            face += 45
-        elif a["face"] == "scan_right":
-            face -= 45
-        elif a["face"] not in ("hold", "path"):
-            target = next((e for e in self.observation["enemies"] if e["id"] == a["face"]), None)
-            if target:
-                face = math.degrees(math.atan2(target["y"] - p["y"], target["x"] - p["x"]))
-            else:
-                overrides.append("Locked face target no longer visible; no substitute")
-        # Approach facing (v47): within48units of a USE line approach point the eyes turn to the line itself, whatever the arrival direction, so the USE ray can reach it; the selected destination promised "face its line and USE".
-        if (
-            destination
-            and not destination.get("walking_through")
-            and destination.get("kind") in ("door_or_switch", "exit")
-            and destination.get("activation", "use") == "use"
-            and a["face"] in ("path", "hold")
-            and dist(pos, [destination["x"], destination["y"]]) < 48
-        ):
-            line = next(
-                (candidate for candidate in self.nav.lines if candidate["id"] == destination["id"]),
-                None,
-            )
-            if line:
-                ax, ay = line["a"]
-                bx, by = line["b"]
-                dx, dy = bx - ax, by - ay
-                t = max(0, min(1, ((p["x"] - ax) * dx + (p["y"] - ay) * dy) / (dx * dx + dy * dy)))
-                face = math.degrees(math.atan2(ay + t * dy - p["y"], ax + t * dx - p["x"]))
-                self.approach_facing_ticks += 1
-                overrides.append(
-                    "Approach facing: turning toward "
-                    + destination["kind"]
-                    + " line "
-                    + destination["id"]
-                    + " within48units of its approach point"
-                )
-        turn = angle(face - p["facing"])
-        values[2] = max(-7, min(7, turn))
-        # One-tick check after startup: +7delta changes0degrees to353degrees (right).
-        values[2] = -values[2]
-        if move == "destination" and waypoint:
-            d = dist(pos, waypoint)
-            theta = math.atan2(waypoint[1] - p["y"], waypoint[0] - p["x"]) - math.radians(
-                p["facing"]
-            )
-            speed = min(35, d * 2)
-            values[0] = math.cos(theta) * speed
-            values[1] = -math.sin(theta) * speed
-            if (
-                destination["kind"] in ("door_or_switch", "exit")
-                and destination.get("activation", "use") == "use"
-                and dist(pos, [destination["x"], destination["y"]]) < 12
-            ):
-                values[0] = values[1] = 0
-            if destination["kind"] == "enemy":
-                enemy = next(
-                    (e for e in self.observation["enemies"] if e["id"] == destination["id"]), None
-                )
-                firing_range = (
-                    48
-                    if p["weapon"] in ("fist", "chainsaw")
-                    else 240
-                    if p["weapon"] == "shotgun"
-                    else 384
-                )
-                if enemy and dist(pos, [enemy["x"], enemy["y"]]) <= firing_range:
-                    values[0] = values[1] = 0
-                    move = "enemy_in_firing_range"
-                    overrides.append(
-                        f"Enemy approach complete within{firing_range}units; stop translation instead of chasing through target"
-                    )
-        elif move == "back":
-            values[0] = -35
-        elif move == "strafe_left":
-            values[1] = -35
-        elif move == "strafe_right":
-            values[1] = 35
-        if a["dodge"] != "carry_on":
-            values[0] = -35 if a["dodge"].startswith("back") else 0
-            values[1] = -35 if a["dodge"].endswith("left") else 35
-            overrides.append("Model dodge takes priority over movement")
-        if a.get("control_rev", 0) != self.control_rev:
-            values[0] = values[1] = 0
-            move = "expired_objective"
-            overrides.append(
-                "Objective expired; old MOVE and DODGE released while waiting for fresh decisions"
-            )
-        values[3] = int(a["trigger"] == "fire")
-        if values[3]:
-            aimed = next(
-                (
-                    e
-                    for e in self.observation["enemies"]
-                    if e["id"] == a["face"] or "recent_" + e["id"] == a["face"]
-                ),
-                None,
-            )
-            if aimed is None:
-                values[3] = 0
-                overrides.append("Fire permission held: exact FACE enemy is not currently visible")
-            else:
-                aim_error = abs(
-                    angle(
-                        math.degrees(math.atan2(aimed["y"] - p["y"], aimed["x"] - p["x"]))
-                        - p["facing"]
-                    )
-                )
-                tolerance = 6 if p["weapon"] == "shotgun" else 3
-                if aim_error > tolerance:
-                    values[3] = 0
-                    overrides.append(
-                        f"Fire permission held until selected enemy is aligned within{tolerance}degrees; error{aim_error:.1f}"
-                    )
-        eligible = min(
-            self.observation.get("interaction_ahead_within_USE_range", []),
-            key=lambda e: e["distance"],
-            default=None,
+        result = calculate_motor(
+            a,
+            self.observation,
+            p,
+            self.nav,
+            self.memory,
+            self.sim_ticks,
+            self.stationary_since,
+            self.control_rev,
+            self.use_latches,
+            self.use_pulses,
+            self.approach_facing_ticks,
         )
-        if a["use"] == "use":
-            if eligible is None:
-                overrides.append("USE permission held: no current interactive line in reach")
-            elif (
-                a.get("use_target")
-                and eligible["id"] != a["use_target"]
-                and not self.same_door(eligible["id"], a["use_target"])
-            ):
-                overrides.append(
-                    f"USE permission held: ray line {eligible['id']} is not the route door {a['use_target']}"
-                )
-            elif eligible.get("kind") == "door":
-                group = eligible.get("use_group", eligible["id"])
-                since = self.sim_ticks - self.use_latches.get(group, -1000)
-                if eligible.get("door_passable") or eligible.get("moving"):
-                    overrides.append("USE permission held: door is moving or already passable")
-                elif since < 35:
-                    overrides.append(
-                        "USE permission held: door activation latch awaits observed outcome"
-                    )
-                else:
-                    values[4] = 1
-                    self.use_latches[group] = self.sim_ticks
-            else:
-                values[4] = int(self.sim_ticks % 14 == 0)
-            if values[4]:
-                self.use_pulses[eligible["id"]] = self.use_pulses.get(eligible["id"], 0) + 1
-                self.log(
-                    "use_pulse",
-                    line=eligible["id"],
-                    game_tick=self.sim_ticks,
-                    opening_height=eligible.get("opening_height"),
-                    player=[round(p["x"], 1), round(p["y"], 1)],
-                    source_request=a["source_request"],
-                )
-        if a["weapon"] != "keep":
-            values[5 + int(a["weapon"]) - 2] = 1
-        self.controls = dict(
-            FACE=dict(choice=a["face"], bearing=round(face, 1), turn=round(values[2], 1)),
-            MOVE=dict(
-                choice=move,
-                model_choice=a["move"],
-                destination=destination,
-                waypoint=waypoint,
-                forward=round(values[0], 1),
-                right=round(values[1], 1),
-            ),
-            TRIGGER=bool(values[3]),
-            TRIGGER_PERMISSION=a["trigger"],
-            WEAPON=a["weapon"],
-            USE=bool(values[4]),
-            USE_PERMISSION=a["use"],
-            USE_RAY_LINE=eligible["id"] if values[4] and eligible else None,
-            overrides=overrides,
-            source_request=a["source_request"],
-        )
-        if values[4] and eligible:
-            self.nav.used[eligible["id"]] += 1
-        return values
-
-    def same_door(self, x, y):
-        def sides(line_id):
-            lines = [line for line in self.nav.lines if line["id"] == line_id]
-            return {line[k] for line in lines for k in ("r", "l")} - {None}
-
-        return bool(sides(x) & sides(y))
+        self.nav = result.nav
+        self.use_latches = result.use_latches
+        self.use_pulses = result.use_pulses
+        self.approach_facing_ticks = result.approach_facing_ticks
+        self.controls = result.controls
+        for kind, data in result.events:
+            self.log(kind, **data)
+        return result.buttons
 
     def episode_costs(self):
         if not hasattr(self, "run_budget_start"):
@@ -1583,9 +989,7 @@ class Harness:
                 ("damage_taken", "DAMAGE_TAKEN"),
                 ("hits_taken", "HITS_TAKEN"),
             ]:
-                self.observation["player"][key] = int(
-                    self.game.get_game_variable(getattr(vzd.GameVariable, var))
-                )
+                self.observation["player"][key] = int(self.engine.variable(var))
         self.end_tactic(reason)
         self.status = reason
         self.controls = dict(released=True, reason=reason)
@@ -1596,22 +1000,23 @@ class Harness:
             episode=self.episode,
             config=self.config,
             game_seconds=round(getattr(self, "sim_ticks", 0) / 35, 2),
-            wall_seconds=round(time.monotonic() - getattr(self, "start_wall", time.monotonic()), 2),
+            wall_seconds=round(self.clock() - getattr(self, "start_wall", self.clock()), 2),
             player=self.observation.get("player"),
             progress=self.observation.get("progress"),
             budget=copy.deepcopy(self.ledger),
         )
+        terminal = self.engine.status()
         self.result["terminal_evidence"] = dict(
-            finished=self.game.is_episode_finished(),
-            dead=self.game.is_player_dead(),
-            timeout=self.game.is_episode_timeout_reached(),
-            last_reward=self.game.get_last_reward(),
-            total_reward=self.game.get_total_reward(),
-            configured_map_exit_reward=self.game.get_map_exit_reward(),
+            finished=terminal.finished,
+            dead=terminal.dead,
+            timeout=terminal.timeout,
+            last_reward=terminal.reward,
+            total_reward=terminal.total_reward,
+            configured_map_exit_reward=terminal.exit_reward,
         )
         self.result["paused_seconds"] = round(
             self.paused_seconds
-            + (time.monotonic() - self.pause_started if self.pause_started is not None else 0),
+            + (self.clock() - self.pause_started if self.pause_started is not None else 0),
             3,
         )
         self.result["recovery_attempts"] = self.recovery_total
@@ -1623,7 +1028,7 @@ class Harness:
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
         self.result["cost_final"] = not self.busy
-        self.result["pending_reservation_usd"] = RESERVE if self.busy else 0
+        self.result["pending_reservation_usd"] = RESERVE if self.busy and self.pending_billed else 0
         self.result["controller_metrics"] = dict(
             controller=self.config.get("controller", "semantic_tactics"),
             failed_route_seconds=round(self.failed_route_ticks / 35, 3),
@@ -1663,12 +1068,12 @@ class Harness:
         self.result.update(self.episode_costs())
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
-            (self.run_dir / "result.json").write_text(json.dumps(self.result, indent=2))
+            self.store.write_result(self.result)
 
     def engine_loop(self):
         try:
             self.new_game()
-            deadline = time.monotonic()
+            deadline = self.clock()
             while not self.stop_event.is_set():
                 with self.lock:
                     while not self.commands.empty():
@@ -1693,9 +1098,9 @@ class Harness:
                             "waiting_provider",
                         ):
                             self.status = "paused"
-                            self.pause_started = time.monotonic()
+                            self.pause_started = self.clock()
                             self.last_action = None
-                            self.game.set_action([0] * len(BUTTONS))
+                            self.engine.release()
                             self.controls = {"released": True, "reason": "paused"}
                         elif cmd == "resume" and self.status == "paused":
                             self.capture()
@@ -1705,9 +1110,16 @@ class Harness:
                             self.order_rev += 1
                             self.last_action = None
                             self.log("orders", text=self.order, revision=self.order_rev)
-                    while not self.replies.empty():
-                        self.accept_reply(*self.replies.get())
-                    if self.status == "recovering" and time.monotonic() >= self.retry_at:
+                    while reply := self.decider.poll():
+                        job, response = reply
+                        self.log(
+                            "provider_return",
+                            request=job["id"],
+                            request_episode=job["episode"],
+                            response=response,
+                        )
+                        self.accept_reply(job, response)
+                    if self.status == "recovering" and self.clock() >= self.retry_at:
                         self.capture()
                         self.status = "warming"
                         self.log(
@@ -1718,18 +1130,18 @@ class Harness:
                     if (
                         self.status == "running"
                         and self.busy
-                        and time.monotonic() - self.last_dispatch > 2
+                        and self.clock() - self.last_dispatch > 2
                     ):
                         self.status = "waiting_provider"
                         self.end_tactic("invalidated")
                         self.last_action = None
                         self.stall_total += 1
-                        self.game.set_action([0] * len(BUTTONS))
+                        self.engine.release()
                         if (
                             self.pause_started is None
                             and self.config.get("timing", "real_time") == "pause_assisted"
                         ):
-                            self.pause_started = time.monotonic()
+                            self.pause_started = self.clock()
                         self.controls = {
                             "released": True,
                             "reason": "Provider stalled over2seconds; "
@@ -1761,19 +1173,11 @@ class Harness:
                             self.failed_route_ticks += 1
                         if self.controls.get("overrides"):
                             self.intervention_ticks += 1
-                        self.game.make_action(buttons, 1)
+                        step = self.engine.step(buttons)
                         self.sim_ticks += 1
-                        if self.game.is_episode_finished():
-                            self.finish(
-                                "dead"
-                                if self.game.is_player_dead()
-                                else "engine_timeout"
-                                if self.game.is_episode_timeout_reached()
-                                else "level_complete"
-                                if self.game.get_last_reward() >= 1
-                                else "episode_ended_unverified"
-                            )
-                        elif self.game.is_player_dead():
+                        if step.finished:
+                            self.finish(end_reason(step))
+                        elif step.dead:
                             self.capture()
                             self.finish("dead")
                         elif self.sim_ticks / 35 >= self.max_seconds:
@@ -1793,23 +1197,15 @@ class Harness:
                         self.config.get("timing", "real_time") == "real_time"
                         and self.status in ("recovering", "waiting_provider", "warming")
                         and self.started_play
-                        and not self.game.is_episode_finished()
+                        and not self.engine.status().finished
                     ):
                         # Real time: the world runs on with released controls while a decision is awaited; only the assisted timing mode may pause it.
-                        self.game.make_action([0] * len(BUTTONS), 1)
+                        step = self.engine.step([0] * len(BUTTONS))
                         self.sim_ticks += 1
                         self.free_run_ticks += 1
-                        if self.game.is_episode_finished():
-                            self.finish(
-                                "dead"
-                                if self.game.is_player_dead()
-                                else "engine_timeout"
-                                if self.game.is_episode_timeout_reached()
-                                else "level_complete"
-                                if self.game.get_last_reward() >= 1
-                                else "episode_ended_unverified"
-                            )
-                        elif self.game.is_player_dead():
+                        if step.finished:
+                            self.finish(end_reason(step))
+                        elif step.dead:
                             self.capture()
                             self.finish("dead")
                         elif self.sim_ticks / 35 >= self.max_seconds:
@@ -1818,10 +1214,11 @@ class Harness:
                         elif self.sim_ticks % 2 == 0:
                             self.capture()
                     self.dispatch()
+                    self.publish_snapshot()
                 deadline += 1 / 35
-                time.sleep(max(0, deadline - time.monotonic()))
-                if deadline < time.monotonic() - 0.2:
-                    deadline = time.monotonic()
+                self.sleep(max(0, deadline - self.clock()))
+                if deadline < self.clock() - 0.2:
+                    deadline = self.clock()
         except Exception as e:
             traceback.print_exc()
             self.error = str(e)
@@ -1833,27 +1230,31 @@ class Harness:
             # A game failure must not strand billing or discard a paid response.
             if self.busy:
                 try:
-                    self.accept_reply(*self.replies.get(timeout=21))
-                except queue.Empty:
-                    self.log("provider_unsettled_after_engine_error", reserved_usd=RESERVE)
+                    reply = self.decider.poll(timeout=21)
+                    if reply:
+                        self.accept_reply(*reply)
+                    else:
+                        self.log(
+                            "provider_unsettled_after_engine_error",
+                            reserved_usd=RESERVE if self.pending_billed else 0,
+                        )
+                except Exception:
+                    self.log(
+                        "provider_unsettled_after_engine_error",
+                        reserved_usd=RESERVE if self.pending_billed else 0,
+                    )
         finally:
-            if hasattr(self, "game"):
-                self.game.close()
+            self.engine.close()
 
     def shutdown(self):
         self.stop_event.set()
-        try:
-            self.jobs.put_nowait(None)
-        except queue.Full:
-            pass
-        if hasattr(self, "gateway_process"):
-            self.gateway_process.terminate()
-        self.engine.join(timeout=3)
+        self.decider.close()
+        self.engine_thread.join(timeout=3)
 
-    def view(self):
+    def _build_view(self):
         with self.lock:
             calls = list(self.records)
-            lat = self.latencies[-300:]
+            lat = list(self.latencies)
             return dict(
                 probes=list(self.probes),
                 provider_health=self.provider_health,
@@ -1901,7 +1302,8 @@ class Harness:
                         )
                     ),
                 ),
-                auth_available=bool(
+                auth_available=self.config.get("controller") == "local"
+                or bool(
                     os.getenv(
                         "TYPESAFE_API_KEY"
                         if self.config.get("provider_key") == "typesafe"
@@ -1909,3 +1311,16 @@ class Harness:
                     )
                 ),
             )
+
+    def publish_snapshot(self):
+        state = copy.deepcopy(self._build_view())
+        tick = state.get("observation", {}).get("tick", 0)
+        self.view_port.publish(state, self.jpeg, tick)
+
+    def view(self):
+        current = self.view_port.read()
+        return copy.deepcopy(current[0] if current is not None else self._build_view())
+
+    def frame_snapshot(self):
+        current = self.view_port.read()
+        return (current[1], current[2]) if current is not None else (b"", 0)

@@ -9,9 +9,7 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import subprocess
-import tempfile
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -142,7 +140,7 @@ class RecordingGame:
 
 def fixed_answer(job):
     """Model-free Jev: fixed_select for every tactic question, carry_on for dodge, one-hot."""
-    from tactics import fixed_select
+    from jevdoom.core.tactics import fixed_select
 
     pick = fixed_select(job["state"]["tactic_candidates"])
     answers = {}
@@ -156,16 +154,20 @@ def fixed_answer(job):
 class ScriptedJev:
     """Stands in for Harness.jobs and the provider thread. Each reply lands `delay` ticks later."""
 
-    def __init__(self, harness, case):
-        self.harness = harness
+    def __init__(self, case):
         self.case = case
         self.pending = []
+        self.completed = []
 
-    def put(self, job):
+    def submit(self, job):
         reply = TIMEOUT_REPLY if job["id"] in self.case.fail else fixed_answer(job)
         self.pending.append([self.case.delay, job, copy.deepcopy(reply)])
 
-    put_nowait = put
+    def poll(self, timeout=0):
+        return self.completed.pop(0) if self.completed else None
+
+    def close(self):
+        pass
 
     def tick(self):
         for item in list(self.pending):
@@ -173,13 +175,7 @@ class ScriptedJev:
             if item[0] <= 0:
                 self.pending.remove(item)
                 _, job, reply = item
-                self.harness.log(
-                    "provider_return",
-                    request=job["id"],
-                    request_episode=job["episode"],
-                    response=reply,
-                )
-                self.harness.replies.put((job, reply))
+                self.completed.append((job, reply))
 
 
 @dataclass
@@ -228,29 +224,52 @@ def check_golden(name, run):
     assert actual["rows_sha256"] == expected["rows_sha256"]
 
 
+class MemoryStore:
+    def __init__(self):
+        self.events = []
+        self.result = None
+        self.started = False
+        self.ledger = None
+
+    def load_ledger(self):
+        return copy.deepcopy(self.ledger)
+
+    def save_ledger(self, ledger):
+        self.ledger = copy.deepcopy(ledger)
+
+    def open_run(self, name):
+        self.started = True
+        self.events = []
+        return Path("memory") / name
+
+    def append_trace(self, event):
+        if self.started:
+            self.events.append(normal(event))
+
+    def append_probe(self, record):
+        pass
+
+    def write_result(self, result):
+        self.result = normal(result)
+
+
 @pytest.fixture
 def play(monkeypatch):
-    """play(case, recorder=None) runs one case on the real engine and returns a Run."""
-    import harness
+    """Run a scripted decider with a real engine, memory store, and tick clock."""
+    from jevdoom import run as harness
     import vizdoom
 
     real_game = vizdoom.DoomGame
-    folders = []
 
     def run(case, recorder=None):
-        # A short folder: the native save path must stay under 100 bytes (harness.py:107).
-        folder = Path(tempfile.mkdtemp(prefix="jd-"))
-        folders.append(folder)
         rows = []
         clock = TickClock()
-        monkeypatch.setattr(harness, "RUNS", folder)
-        monkeypatch.setattr(harness, "time", clock)
+        jev = ScriptedJev(case)
+        store = MemoryStore()
         monkeypatch.setattr(vizdoom, "DoomGame", lambda: RecordingGame(real_game(), rows))
         with monkeypatch.context() as patch:
             patch.setattr(threading, "Thread", IdleThread)
-            h = harness.Harness()
-        jev = ScriptedJev(h, case)
-        h.jobs = jev
+            h = harness.Run(decider=jev, store=store, clock=clock.monotonic, sleep=clock.sleep)
         h.provider_health["gateway"] = True
         start = dict(
             map=case.map,
@@ -283,16 +302,11 @@ def play(monkeypatch):
 
         clock.after_sleep = after_sleep
         h.engine_loop()
-        # engine_loop catches every exception; surface it here.
         assert h.status != "engine_error", h.error
         assert h.result or h.sim_ticks >= case.ticks, f"run stalled at tick {h.sim_ticks}"
-        h.trace.close()
-        lines = (h.run_dir / "trace.jsonl").read_text().splitlines()
-        return Run(h, rows, [json.loads(line) for line in lines])
+        return Run(h, rows, store.events)
 
-    yield run
-    for folder in folders:
-        shutil.rmtree(folder, ignore_errors=True)
+    return run
 
 
 # Observation fixtures: the pure decision functions on recorded observations, without the engine.
@@ -396,12 +410,12 @@ def reply_variants(questions):
 
 def validation_outcomes(questions):
     """validate_answers on each reply variant: its validation record or its error text."""
-    from harness import Harness
+    from jevdoom.run import Run
 
     out = {}
     for name, reply in reply_variants(questions):
         try:
-            Harness.validate_answers(None, dict(questions=questions), reply)
+            Run.validate_answers(None, dict(questions=questions), reply)
             out[name] = dict(validation=reply["validation"])
         except ValueError as error:
             out[name] = dict(error=str(error))
@@ -418,7 +432,7 @@ class DecisionRecorder:
         self.fixtures = []
 
     def install(self, monkeypatch, h, case):
-        import harness
+        from jevdoom import run as harness
 
         real_menu, real_questions, real_measure = (
             harness.build_menu,
