@@ -19,3 +19,11 @@ def test_local_decision_is_valid_and_free():
     assert decision["cost_usd"] == 0
     assert decision["model"] == "Local rule, no model"
     assert not LocalDecider.billed
+
+
+def test_local_fire_matches_selected_tactic_after_order_change():
+    menu = [{"id": "combat", "priority": 0, "route_units": 0, "controls": {"trigger": "fire"}}]
+    job = {"state": {"tactic_candidates": menu}, "questions": {"fire": {"criteria": ["allow", "hold"]}}}
+    assert LocalDecider().ask(job)["answers"]["fire"]["choice"] == "allow"
+    menu[0]["controls"]["trigger"] = "hold_fire"
+    assert LocalDecider().ask(job)["answers"]["fire"]["choice"] == "hold"

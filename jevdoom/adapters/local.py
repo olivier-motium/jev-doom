@@ -8,9 +8,11 @@ class LocalDecider:
 
     def ask(self, job):
         pick = fixed_select(job["state"]["tactic_candidates"])
+        selected_option = next(option for option in job["state"]["tactic_candidates"] if option["id"] == pick)
+        fire = "allow" if selected_option["controls"]["trigger"] == "fire" else "hold"
         answers = {}
         for name, question in job["questions"].items():
-            selected = {"dodge": "carry_on", "fire": "hold"}.get(name, pick)
+            selected = {"dodge": "carry_on", "fire": fire}.get(name, pick)
             answers[name] = {
                 "type": "choice",
                 "choice": selected,
