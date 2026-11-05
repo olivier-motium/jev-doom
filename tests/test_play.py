@@ -76,6 +76,19 @@ def test_held_out_play(play, map_name, seed, delay):
         ),
         recorder,
     )
+    # S1 pre-rework, immediate-reply harness measurements (1,040 ticks).
+    baseline = {
+        ("MAP01", 41): (209, 623, 0),
+        ("MAP02", 41): (209, 552, 0),
+        ("MAP01", 42): (209, 612, 0),
+        ("MAP02", 42): (209, 545, 0),
+    }[map_name, seed]
+    metrics = run.metrics()
+    assert metrics["seen_cells"] >= baseline[1] * 0.9
+    assert metrics["deaths"] <= baseline[2]
+    if delay == 20:
+        assert sum(recorder.counts.values()) <= run.harness.sim_ticks * 0.1
+        assert metrics["requests"] <= baseline[0] * 0.4
     print(
         "HELDOUT",
         json.dumps(
