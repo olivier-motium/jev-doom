@@ -4,6 +4,8 @@ Watch [Jev](https://typesafe.ai/) make structured decisions in a real Freedoom g
 
 Use **TypeSafe direct** or **Vercel AI Gateway**. This is an independent experiment, not an official TypeSafe, Vercel or Doom product.
 
+![The dashboard after replaying the local MAP01 demo: game view, applied decision, choice probabilities and decision timeline](docs/dashboard.jpg)
+
 ## Quick start
 
 Requires macOS or Linux, **Python 3.10–3.13**, **Node.js 22+**, and internet access for setup. Python 3.13 is recommended. Windows users can try WSL2; it has not been validated. Some systems need the native libraries listed in the [ViZDoom installation guide](https://vizdoom.farama.org/introduction/installation/).
@@ -32,7 +34,7 @@ If your default Python is newer, use `PYTHON=python3.13 ./setup.sh`. To use a di
 
 Direct requests use `https://api.typesafe.ai/v1/systemone` with `jev-latest`. Gateway requests use AI SDK's experimental evaluation API with `typesafe-ai/jev`. Provider access, availability and billing depend on your account. The keys stay in the Python/Node server processes; the browser receives only readiness flags. Do not put private information in standing orders: game state and orders are sent to the selected provider.
 
-The default run lasts **90 seconds**. The default controller is **Local rule, no model**: it needs no API key and makes no provider calls. Choose Jev for model decisions. Pause, stop, change orders, or switch maps between runs.
+The default run lasts **90 seconds**. The default controller is **Local rule, no model**: it needs no API key and makes no provider calls. Choose Jev for model decisions. Pause, stop, change orders, or switch maps between runs. Orders longer than 1,500 characters are rejected with a visible error.
 
 ## Replay without a key
 
@@ -56,9 +58,9 @@ Jev receives **observable** state as structured engine observations: visible ent
 
 The engine runs at 35 Hz. In real-time mode, a chosen option continues while another decision is pending. When the option ends, a local fallback selects from the current menu until a valid reply arrives. The fallback is labelled in the live tactic state. Startup and explicit pause stop the simulation; during recovery, an already-started real-time run continues with released controls. `pause_assisted` timing is a separate API option. Game time and wall time differ. MAP01 and MAP02 are supported; later maps are unvalidated. A terminal episode is not automatically a completed level. This repository makes no level-completion or model-performance claim.
 
-The local rule follows its selected tactic and does not interpret custom orders. When asked about fire, it allows fire only if that tactic calls for it. On MAP01 and MAP02, seeds 41 and 42, the pre-rework immediate-reply harness made 209 requests per 1,040-tick run. Current local runs made 61–103 requests, a 51–71% reduction; three of four missed the planned 60% reduction. Seen cells changed from 623 to 596, 552 to 547, 612 to 610, and 545 to 551, respectively. No local run died.
+The local rule follows its selected tactic and does not interpret custom orders. When asked about fire, it allows fire only if that tactic calls for it. On MAP01 and MAP02, seeds 41 and 42, the pre-rework immediate-reply harness made 209 requests per 1,040-tick run. Current local runs made 56–104 requests, a 50–73% reduction; two of four missed the planned 60% reduction. Seen cells changed from 623 to 1,524, 552 to 554, 612 to 611, and 545 to 532, respectively. No local run died.
 
-With scripted replies delayed by 20 ticks, the current runs made 44–53 requests, 75–79% fewer than that pre-rework immediate-reply baseline. They released controls for zero of 1,040 ticks each. Seen cells were 607, 594, 600 and 1,415 in the same map and seed order; no run died. This compares different reply delays and uses model-free tests. It does not establish Jev performance.
+With scripted replies delayed by 20 ticks, the current runs made 47–50 requests, 76–78% fewer than that pre-rework immediate-reply baseline. They released controls for zero of 1,040 ticks each. Seen cells were 609, 1,207, 598 and 543 in the same map and seed order; no run died. This compares different reply delays and uses model-free tests. It does not establish Jev performance.
 
 ## Architecture
 
