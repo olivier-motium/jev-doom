@@ -90,7 +90,7 @@ def owns_pickup(name, carrying):
     weapon = next((item for item in carrying if item["slot"] == slot), None)
     if weapon is None:
         return False
-    # Slot 3 cannot distinguish an SSG-only inventory, which may still chase another SSG.
+    # Slot count and disappearance do not prove pickup type; assume shotgun when an SSG-only slot is ambiguous.
     if name in ("Chainsaw", "SuperShotgun"):
         return weapon.get("count", 1) >= 2
     return weapon.get("count", 1) >= 1
