@@ -297,8 +297,11 @@ def build_menu(state, nav):
         elif e["kind"] == "health":
             benefit = min(effects.get(name, 0), max(0, health_cap - p["health"]))
         elif e["kind"] == "armor":
-            benefit = (min(effects.get(name, 0), max(0, armor_cap - p["armor"]))
-                       if name == "ArmorBonus" else max(0, armor_cap - p["armor"]))
+            benefit = (
+                min(effects.get(name, 0), max(0, armor_cap - p["armor"]))
+                if name == "ArmorBonus"
+                else max(0, armor_cap - p["armor"])
+            )
         else:
             benefit = 0
         score = benefit / max(48, length)

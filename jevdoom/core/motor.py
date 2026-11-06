@@ -72,8 +72,9 @@ def calculate_motor(
     if not destination or move != "destination":
         nav.door_push_started.clear()
     else:
-        nav.door_push_started = {k: v for k, v in nav.door_push_started.items()
-                                 if k == destination.get("id")}
+        nav.door_push_started = {
+            k: v for k, v in nav.door_push_started.items() if k == destination.get("id")
+        }
     waypoint = None
     if destination:
         if destination.get("through"):
@@ -83,17 +84,22 @@ def calculate_motor(
                 wp = nav.waypoint(pos, destination["through"])
                 previous = observation.get("previous_controls", {}).get("MOVE", {})
                 previous_target = previous.get("destination") or {}
-                pushing = (move == "destination" and a["dodge"] == "carry_on"
-                           and a.get("control_rev", 0) == control_rev
-                           and previous_target.get("id") == destination["id"]
-                           and (previous.get("forward", 0) or previous.get("right", 0)))
+                pushing = (
+                    move == "destination"
+                    and a["dodge"] == "carry_on"
+                    and a.get("control_rev", 0) == control_rev
+                    and previous_target.get("id") == destination["id"]
+                    and (previous.get("forward", 0) or previous.get("right", 0))
+                )
                 if pushing:
                     nav.door_push_started.setdefault(destination["id"], sim_ticks)
                 else:
                     nav.door_push_started.pop(destination["id"], None)
                 if (
-                    wp and pushing
-                    and sim_ticks - max(stationary_since, nav.door_push_started[destination["id"]]) > 35
+                    wp
+                    and pushing
+                    and sim_ticks - max(stationary_since, nav.door_push_started[destination["id"]])
+                    > 35
                     and dist(
                         pos,
                         [
@@ -104,7 +110,9 @@ def calculate_motor(
                     < 96
                 ):
                     # Pushed toward the doorway for a second without moving: the piece is not passable now, whatever the view said; it is a wall again until seen open.
-                    closed = nav.close_door(destination["id"], [destination["line_x"], destination["line_y"]])
+                    closed = nav.close_door(
+                        destination["id"], [destination["line_x"], destination["line_y"]]
+                    )
                     if closed:
                         emit(
                             "door_push_blocked",

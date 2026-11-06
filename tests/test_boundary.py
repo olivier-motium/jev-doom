@@ -32,7 +32,11 @@ def imported_names(node):
 
 
 def is_forbidden(name):
-    return name.split(".")[0] in BANNED or name == "jevdoom.adapters" or name.startswith("jevdoom.adapters.")
+    return (
+        name.split(".")[0] in BANNED
+        or name == "jevdoom.adapters"
+        or name.startswith("jevdoom.adapters.")
+    )
 
 
 def test_core_does_not_import_runtime_adapters():
@@ -40,12 +44,18 @@ def test_core_does_not_import_runtime_adapters():
     for path in CORE.rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            violations.extend((str(path), name) for name in imported_names(node) if is_forbidden(name))
+            violations.extend(
+                (str(path), name) for name in imported_names(node) if is_forbidden(name)
+            )
     assert not violations
 
 
 def test_boundary_rejects_absolute_and_relative_adapter_imports():
-    for source in ("import jevdoom.adapters.gateway", "from jevdoom import adapters",
-                   "from jevdoom.adapters.gateway import Gateway", "from ..adapters import gateway",
-                   "from .. import adapters"):
+    for source in (
+        "import jevdoom.adapters.gateway",
+        "from jevdoom import adapters",
+        "from jevdoom.adapters.gateway import Gateway",
+        "from ..adapters import gateway",
+        "from .. import adapters",
+    ):
         assert any(is_forbidden(name) for name in imported_names(ast.parse(source).body[0]))

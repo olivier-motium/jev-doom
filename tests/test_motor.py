@@ -51,8 +51,14 @@ def test_only_matching_door_faces_share_an_interaction():
 def test_closing_one_door_span_rebuilds_the_wall():
     nav = Navigator.__new__(Navigator)
     nav.observed_lines = {
-        "door": {"id": "door", "a": (0, 0), "b": (0, 100), "kind": "door",
-                 "spans": [(0, 0.25), (0.75, 1)], "open_spans": [(0, 0.25)]}
+        "door": {
+            "id": "door",
+            "a": (0, 0),
+            "b": (0, 100),
+            "kind": "door",
+            "spans": [(0, 0.25), (0.75, 1)],
+            "open_spans": [(0, 0.25)],
+        }
     }
     nav.cache, nav._nb_cache, nav._edge_cache = {}, {}, {}
     nav._reach, nav._geom_version = None, 0
@@ -68,22 +74,48 @@ def test_closing_one_door_span_rebuilds_the_wall():
 
 def test_stationary_combat_does_not_close_door_but_blocked_push_does():
     nav = Navigator.__new__(Navigator)
-    nav.observed_lines = {"door": {"id": "door", "a": (0, 0), "b": (0, 64),
-        "kind": "door", "spans": [(0, 1)], "open_spans": [(0, 1)], "open_tick": 1}}
+    nav.observed_lines = {
+        "door": {
+            "id": "door",
+            "a": (0, 0),
+            "b": (0, 64),
+            "kind": "door",
+            "spans": [(0, 1)],
+            "open_spans": [(0, 1)],
+            "open_tick": 1,
+        }
+    }
     nav.cache, nav._nb_cache, nav._edge_cache = {}, {}, {}
     nav._reach, nav._geom_version = None, 0
     nav.used, nav.lines = defaultdict(int), []
     nav.door_push_started = {"door": 0}
     nav.waypoint = lambda _start, end: end
     nav._rebuild_walls()
-    target = {"id": "door", "kind": "door_or_switch", "x": -10, "y": 32,
-              "line_x": 0, "line_y": 32, "through": [72, 32]}
-    action = {"face": "hold", "move": "hold", "dodge": "carry_on", "trigger": "hold_fire",
-              "weapon": "keep", "use": "no_use", "snapshot": {"objective": {"subject": target}},
-              "control_rev": 0, "source_request": 1}
+    target = {
+        "id": "door",
+        "kind": "door_or_switch",
+        "x": -10,
+        "y": 32,
+        "line_x": 0,
+        "line_y": 32,
+        "through": [72, 32],
+    }
+    action = {
+        "face": "hold",
+        "move": "hold",
+        "dodge": "carry_on",
+        "trigger": "hold_fire",
+        "weapon": "keep",
+        "use": "no_use",
+        "snapshot": {"objective": {"subject": target}},
+        "control_rev": 0,
+        "source_request": 1,
+    }
     player = {"x": -10, "y": 32, "facing": 0, "weapon": "pistol"}
-    observation = {"enemies": [], "previous_controls": {"MOVE": {"destination": target,
-                   "forward": 20, "right": 0}}}
+    observation = {
+        "enemies": [],
+        "previous_controls": {"MOVE": {"destination": target, "forward": 20, "right": 0}},
+    }
     held = calculate_motor(action, observation, player, nav, {}, 50, 0, 0, {}, {}, 0)
     assert held.nav.point_is_open(held.nav.observed_lines["door"], (0, 32))
     action["move"] = "destination"

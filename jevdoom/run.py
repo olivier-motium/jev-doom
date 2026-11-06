@@ -273,10 +273,7 @@ class Run:
         if seed != 17:
             parts.append("seed %d" % seed)
         self.config["start_type"] = (
-            "Fresh pistol start"
-            if not parts
-            else "Fresh pistol start on "
-            + ", ".join(parts)
+            "Fresh pistol start" if not parts else "Fresh pistol start on " + ", ".join(parts)
         )
         self.config["start_type"] += ", observable mode"
         if timing == "pause_assisted":
@@ -329,8 +326,12 @@ class Run:
             hits_taken=int(var("HITS_TAKEN")),
         )
         p["carrying"] = [
-            dict(slot=i, name=WEAPON_NAMES[i], ammo=int(var("AMMO" + str(i))),
-                 count=int(var("WEAPON" + str(i))))
+            dict(
+                slot=i,
+                name=WEAPON_NAMES[i],
+                ammo=int(var("AMMO" + str(i))),
+                count=int(var("WEAPON" + str(i))),
+            )
             for i in WEAPON_NAMES
             if var("WEAPON" + str(i))
         ]
@@ -716,7 +717,11 @@ class Run:
         self.pending_billed = self.config["controller"] != "local"
         self.pending_since = now
         self.pending_stalled = False
-        if self.started_play and self.config.get("timing") == "pause_assisted" and self.pause_started is None:
+        if (
+            self.started_play
+            and self.config.get("timing") == "pause_assisted"
+            and self.pause_started is None
+        ):
             self.pause_started = now
         self.last_dispatch = now
         if self.active_tactic:
@@ -1262,9 +1267,13 @@ class Run:
                     self.objective = None
                     self.control_rev += 1
                     self.log("orders", text=self.order, revision=self.order_rev)
-            if (self.busy and self.pending_since is not None and not self.pending_stalled
-                    and self.status in ("running", "warming")
-                    and self.clock() - self.pending_since >= 2):
+            if (
+                self.busy
+                and self.pending_since is not None
+                and not self.pending_stalled
+                and self.status in ("running", "warming")
+                and self.clock() - self.pending_since >= 2
+            ):
                 self.pending_stalled = True
                 self.stall_total += 1
                 self.status = "waiting_provider"
@@ -1286,8 +1295,10 @@ class Run:
                     attempt=self.recovery_attempts,
                     game_tick=self.observation["tick"],
                 )
-            if self.status in ("running", "waiting_provider") and self.started_play and not (
-                self.busy and self.config.get("timing") == "pause_assisted"
+            if (
+                self.status in ("running", "waiting_provider")
+                and self.started_play
+                and not (self.busy and self.config.get("timing") == "pause_assisted")
             ):
                 buttons = self.motor()
                 if self.controls.get("MOVE", {}).get(

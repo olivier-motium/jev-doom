@@ -30,7 +30,9 @@ def test_replies_twenty_ticks_late(play):
 def test_provider_stall_discards_late_reply_and_requests_fresh_state(play):
     run = play(Case("provider_stall", delay=80, ticks=300))
     assert events(run, "provider_stall")
-    discarded = [r for r in run.records() if any("Provider stall" in s for s in r["override_reasons"])]
+    discarded = [
+        r for r in run.records() if any("Provider stall" in s for s in r["override_reasons"])
+    ]
     assert discarded and not discarded[0]["accepted"]
     assert any(event["id"] > discarded[0]["id"] for event in events(run, "request"))
 

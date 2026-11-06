@@ -42,8 +42,12 @@ def test_successful_observations_do_not_hide_unexplained_damage(navigator):
     context.observation["enemies"] = []
     context.observation["just_took_damage"] = True
     context.tactic_outcomes = [
-        {"tactic": "observe", "prediction": {"kind": "observation"},
-         "prediction_status": "met", "measured": {"new_visible": ["enemy"], "new_navigation": []}}
+        {
+            "tactic": "observe",
+            "prediction": {"kind": "observation"},
+            "prediction_status": "met",
+            "measured": {"new_visible": ["enemy"], "new_navigation": []},
+        }
         for _ in range(2)
     ]
     state = Run.state_for_model(context)
@@ -63,8 +67,20 @@ def test_pickups_above_normal_health_and_armor_limits(navigator, monkeypatch):
     p["health"], p["armor"] = 100, 80
     state.update(enemies=[], remembered=[], navigation=[], projectiles=[])
     state["items"] = [
-        {"id": "Soulsphere_1", "kind": "health", "label": "Soulsphere", "x": p["x"] + 60, "y": p["y"]},
-        {"id": "BlueArmor_1", "kind": "armor", "label": "Blue armor", "x": p["x"], "y": p["y"] + 60},
+        {
+            "id": "Soulsphere_1",
+            "kind": "health",
+            "label": "Soulsphere",
+            "x": p["x"] + 60,
+            "y": p["y"],
+        },
+        {
+            "id": "BlueArmor_1",
+            "kind": "armor",
+            "label": "Blue armor",
+            "x": p["x"],
+            "y": p["y"] + 60,
+        },
     ]
     monkeypatch.setattr(nav, "path", lambda start, end: [start, end])
     menu, _ = build_menu(state, nav)

@@ -279,11 +279,23 @@ class Navigator:
                     segs.append(LineString([(a.x, a.y), (b.x, b.y)]))
         self._observed_union = unary_union(segs) if segs else GeometryCollection()
         margin = PLAYER_RADIUS + 0.1
-        self._observed_blocked = unary_union([
-            MultiPoint([(x + dx, y + dy) for x, y in seg.coords
-                        for dx in (-margin, margin) for dy in (-margin, margin)]).convex_hull
-            for seg in segs
-        ]) if segs else GeometryCollection()
+        self._observed_blocked = (
+            unary_union(
+                [
+                    MultiPoint(
+                        [
+                            (x + dx, y + dy)
+                            for x, y in seg.coords
+                            for dx in (-margin, margin)
+                            for dy in (-margin, margin)
+                        ]
+                    ).convex_hull
+                    for seg in segs
+                ]
+            )
+            if segs
+            else GeometryCollection()
+        )
         self._union_prep = prep(self._observed_union)
         self._blocked_prep = prep(self._observed_blocked)
 
@@ -291,8 +303,12 @@ class Navigator:
         record = self.observed_lines[line_id]
         base = LineString([record["a"], record["b"]])
         t = base.project(Point(point), normalized=True)
-        opened = [tuple(span) for span in record.get("open_spans", record["spans"]
-                  if record.get("open_tick") is not None else [])]
+        opened = [
+            tuple(span)
+            for span in record.get(
+                "open_spans", record["spans"] if record.get("open_tick") is not None else []
+            )
+        ]
         remaining = [span for span in opened if not span[0] <= t <= span[1]]
         if len(remaining) == len(opened):
             return False
@@ -308,8 +324,7 @@ class Navigator:
     def point_is_open(self, record, point):
         base = LineString([record["a"], record["b"]])
         t = base.project(Point(point), normalized=True)
-        return any(s0 <= t <= s1 and self.span_open(record, (s0, s1))
-                   for s0, s1 in record["spans"])
+        return any(s0 <= t <= s1 and self.span_open(record, (s0, s1)) for s0, s1 in record["spans"])
 
     def _invalidate_cell(self, c):
         for dx in (-1, 0, 1):

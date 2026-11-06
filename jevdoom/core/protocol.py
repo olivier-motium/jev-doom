@@ -18,9 +18,18 @@ def state_for_model(observation, objective, exploration_target, tactic_outcomes,
     state.get("survival", {}).pop("active_escape", None)
     state["exploration_target"] = exploration_target
     state["recent_tactic_outcomes"] = [
-        {**{k: v for k, v in o.items() if k != "measured"},
-         **({"measured": {k: o["measured"].get(k, []) for k in ("new_visible", "new_navigation")}}
-            if o.get("prediction", {}).get("kind") == "observation" else {})}
+        {
+            **{k: v for k, v in o.items() if k != "measured"},
+            **(
+                {
+                    "measured": {
+                        k: o["measured"].get(k, []) for k in ("new_visible", "new_navigation")
+                    }
+                }
+                if o.get("prediction", {}).get("kind") == "observation"
+                else {}
+            ),
+        }
         for o in list(tactic_outcomes)[-5:]
     ]
     state["assumptions"] = (

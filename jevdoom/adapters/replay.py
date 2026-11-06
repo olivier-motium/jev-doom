@@ -84,7 +84,9 @@ class ReplaySession:
         shown = []
         try:
             self.engine.start(
-                self.config["map"], self.config["skill"], self.config["seed"],
+                self.config["map"],
+                self.config["skill"],
+                self.config["seed"],
                 replay_path=self.recording,
             )
             frame = self.engine.frame()
@@ -102,7 +104,9 @@ class ReplaySession:
                     break
                 frame = self.engine.frame()
                 self.stop_event.wait(1 / 35)
-            self._publish(frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown)
+            self._publish(
+                frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown
+            )
         except Exception as exc:
             self.error = str(exc)
         finally:
