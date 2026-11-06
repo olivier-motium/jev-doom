@@ -37,11 +37,10 @@ class ReplaySession:
         self.stop_event = threading.Event()
         self.view_port = SnapshotView()
         self.engine = VizdoomEngine(Path(__file__).resolve().parents[2] / "assets/freedoom2.wad")
-        self.engine.start(
-            self.config["map"], self.config["skill"], self.config["seed"], replay_path=recording
-        )
+        self.recording = recording
+        self.error = None
+        self.start_lock = threading.Lock()
         self.thread = threading.Thread(target=self._play, daemon=True)
-        self.thread.start()
 
     def _publish(self, frame, status, shown):
         if frame is None:
@@ -84,6 +83,10 @@ class ReplaySession:
     def _play(self):
         shown = []
         try:
+            self.engine.start(
+                self.config["map"], self.config["skill"], self.config["seed"],
+                replay_path=self.recording,
+            )
             frame = self.engine.frame()
             while not self.stop_event.is_set() and frame is not None:
                 while (
@@ -99,12 +102,21 @@ class ReplaySession:
                     break
                 frame = self.engine.frame()
                 self.stop_event.wait(1 / 35)
-            self._publish(frame, "replay_finished", shown)
+            self._publish(frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown)
+        except Exception as exc:
+            self.error = str(exc)
         finally:
             self.engine.close()
 
     def view(self):
+        with self.start_lock:
+            if self.thread.ident is None and not self.stop_event.is_set():
+                self.thread.start()
         snapshot = self.view_port.read()
+        if self.error is not None:
+            state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
+            state.update(status="replay_error", error=self.error, replay=True)
+            return state
         return (
             copy.deepcopy(snapshot[0]) if snapshot else {"status": "booting", "config": self.config}
         )
@@ -115,4 +127,5 @@ class ReplaySession:
 
     def shutdown(self):
         self.stop_event.set()
-        self.thread.join(timeout=3)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=3)

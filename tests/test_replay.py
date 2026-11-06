@@ -39,6 +39,7 @@ def test_record_and_replay(map_name, seed, monkeypatch):
         final = run.result["player"]
         replay = ReplaySession(run.run_dir)
         try:
+            replay.view()
             first_seen = {}
             deadline = time.monotonic() + 12
             while replay.thread.is_alive() and time.monotonic() < deadline:

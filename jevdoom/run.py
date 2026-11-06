@@ -1219,6 +1219,7 @@ class Run:
                     if self.busy or self.status in (
                         "running",
                         "warming",
+                        "paused",
                         "recovering",
                         "waiting_provider",
                     ):
@@ -1235,6 +1236,7 @@ class Run:
                     "waiting_provider",
                 ):
                     self.status = "paused"
+                    self.control_rev += 1
                     self.pause_started = self.clock()
                     self.last_action = None
                     self.engine.release()
@@ -1355,14 +1357,16 @@ class Run:
         finally:
             try:
                 with self.lock:
+                    if self.stop_event.is_set():
+                        self.finish("stopped")
                     self.publish_snapshot()
             finally:
                 self.engine.close()
 
     def shutdown(self):
         self.stop_event.set()
-        self.decider.close()
         self.engine_thread.join(timeout=3)
+        self.decider.close()
 
     def _build_view(self):
         with self.lock:

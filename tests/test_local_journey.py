@@ -146,3 +146,14 @@ def test_demo_surfaces_engine_start_error(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["jevdoom", "--demo"])
     with pytest.raises(RuntimeError, match="Demo recording failed: engine start failed"):
         app.main()
+
+
+def test_demo_requires_all_recording_files(tmp_path):
+    from jevdoom.app import complete_recording
+
+    (tmp_path / "episode.lmp").touch()
+    assert not complete_recording(tmp_path)
+    (tmp_path / "trace.jsonl").touch()
+    assert not complete_recording(tmp_path)
+    (tmp_path / "result.json").touch()
+    assert complete_recording(tmp_path)

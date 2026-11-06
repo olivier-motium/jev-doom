@@ -13,6 +13,12 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def complete_recording(run_dir):
+    return run_dir is not None and all(
+        (run_dir / name).is_file() for name in ("episode.lmp", "trace.jsonl", "result.json")
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the local Doom dashboard")
     group = parser.add_mutually_exclusive_group()
@@ -32,7 +38,7 @@ def main():
     if args.demo:
         pointer = ROOT / "runs" / "demo-path.txt"
         run_dir = Path(pointer.read_text().strip()) if pointer.exists() else None
-        if not run_dir or not (run_dir / "episode.lmp").is_file():
+        if not complete_recording(run_dir):
             from jevdoom.run import Run
 
             print("Recording a local demo (up to 60 game seconds)...", flush=True)
@@ -58,7 +64,7 @@ def main():
                 threading.Event().wait(0.25)
             run_dir = getattr(run, "run_dir", None)
             run.shutdown()
-            if not run_dir or not (run_dir / "episode.lmp").is_file():
+            if not complete_recording(run_dir):
                 raise RuntimeError(f"Demo recording failed: {run.error or 'no recording produced'}")
             pointer.write_text(str(run_dir))
         args.replay = str(run_dir)
