@@ -72,6 +72,29 @@ def test_closing_one_door_span_rebuilds_the_wall():
     assert midpoint == [0, 12.5]
 
 
+def test_a_ray_opens_only_the_span_it_crosses():
+    nav = Navigator.__new__(Navigator)
+    nav.observed_lines = {
+        "door": {
+            "id": "door",
+            "a": (0, 0),
+            "b": (0, 100),
+            "kind": "door",
+            "spans": [(0, 0.2), (0.8, 1)],
+        }
+    }
+    nav.obs_cells, nav.seen = {}, set()
+    nav.visits, nav.trail = defaultdict(int), []
+    nav.cache, nav._nb_cache, nav._edge_cache = {}, {}, {}
+    nav._reach, nav._geom_version = None, 0
+    nav.sector_of_point = lambda x, y: 0
+    nav.observe_view((-50, 10), 0, [255], 1)
+    pieces = nav.observed_segments()
+    assert [piece["open"] for piece in pieces] == [True, False]
+    assert nav._observed_union.distance(Point(0, 10)) > 1
+    assert nav._observed_union.distance(Point(0, 90)) == 0
+
+
 def test_stationary_combat_does_not_close_door_but_blocked_push_does():
     nav = Navigator.__new__(Navigator)
     nav.observed_lines = {
