@@ -46,6 +46,7 @@ def create_app(h):
             origin = request.headers.get("origin")
             if origin and origin != str(request.base_url).rstrip("/"):
                 return Response("Same local origin required", status_code=403)
+            # 48,000 bytes is the decision request bound (run.py), kept from the original gateway.mjs.
             length = request.headers.get("content-length")
             if length is not None:
                 try:

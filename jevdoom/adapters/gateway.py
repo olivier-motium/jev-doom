@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 class Gateway:
+    # gateway.mjs aborts each provider call at 20 s; 5 s more lets its error reply arrive.
     def __init__(self, root: Path, command=None, timeout=25):
         self.root = root
         self.command = command or ["node", str(root / "gateway.mjs")]
