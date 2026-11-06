@@ -41,7 +41,8 @@ def test_record_and_replay(map_name, seed, monkeypatch):
         try:
             replay.view()
             first_seen = {}
-            deadline = time.monotonic() + 12
+            # Replay is paced at 35 tics per second in wall time; a loaded machine needs headroom.
+            deadline = time.monotonic() + 60
             while replay.thread.is_alive() and time.monotonic() < deadline:
                 snapshot = replay.view()
                 tick = snapshot.get("observation", {}).get("tick")
