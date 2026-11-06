@@ -48,6 +48,13 @@ def test_slow_first_reply_starts_play_without_warming_retry(play):
     assert run.harness.started_play and run.harness.sim_ticks >= 100
 
 
+def test_pause_assisted_slow_replies_do_not_expire(play):
+    run = play(Case("slow_assisted", delay=80, ticks=10, timing="pause_assisted"))
+    assert run.harness.sim_ticks >= 10
+    assert not events(run, "provider_stall")
+    assert sum(record["accepted"] for record in run.records()) >= 2
+
+
 def test_order_change_while_a_call_is_pending(play):
     require_hash_seed()
     run = play(Case("map01_order_change", delay=20, order_at=200, ticks=500))

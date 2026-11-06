@@ -63,6 +63,7 @@ class Case:
     seconds: float = 90
     delay: int = 1  # engine ticks from request to reply; 1 means the next tick
     controller: str = "semantic_tactics"
+    timing: str = "real_time"
     fail: tuple = ()  # request ids answered with a provider timeout
     order_at: int | None = None  # game tick after which the order changes while a call is pending
 
@@ -288,6 +289,7 @@ def play(monkeypatch):
             skill=case.skill,
             seconds=case.seconds,
             controller=case.controller,
+            timing=case.timing,
             provider="gateway",
         )
         h.commands.put(("start", start))

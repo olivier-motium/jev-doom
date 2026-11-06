@@ -1284,8 +1284,9 @@ class Run:
                 and self.pending_since is not None
                 and not self.pending_stalled
                 and self.started_play
+                and self.config.get("timing", "real_time") == "real_time"
                 and self.status in ("running", "warming")
-                # The pre-rework loop used an approximately two-second stall threshold, not a provider SLA.
+                # pre-rework:harness.py:777 used 2 s as the real-time control lease, not a provider SLA.
                 and self.clock() - self.pending_since >= 2
             ):
                 self.pending_stalled = True
