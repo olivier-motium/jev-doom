@@ -279,17 +279,8 @@ def build_menu(state, nav):
         "BlueArmor": 200,
         "ArmorBonus": 1,
     }
-    # Route planning is the costly step; plan only the four nearest candidates per kind by straight line.
-    nearest_per_kind = {}
-    for e in sorted(items.values(), key=lambda e: dist(pos, [e["x"], e["y"]])):
-        nearest_per_kind.setdefault(e["kind"], []).append(e)
-    budgeted = [e for group in nearest_per_kind.values() for e in group[:4]]
-    for e in budgeted:
+    for e in items.values():
         name = e["id"].rsplit("_", 1)[0]
-        path = nav.path(pos, [e["x"], e["y"]])
-        length = route_length(path)
-        if not path or dist(path[-1], [e["x"], e["y"]]) > 32:
-            continue
         health_cap = 200 if name in ("HealthBonus", "Soulsphere", "Megasphere") else 100
         armor_cap = 200 if name in ("ArmorBonus", "BlueArmor", "Megasphere") else 100
         if name == "Megasphere":
@@ -304,15 +295,11 @@ def build_menu(state, nav):
             )
         else:
             benefit = 0
-        score = benefit / max(48, length)
-        if e["kind"] == "health" and p["health"] < health_cap:
-            health.append((-score, e["id"], e))
-        elif name == "Megasphere" and p["armor"] < 200:
-            armor.append((-score, e["id"], e))
-        if e["kind"] == "armor" and p["armor"] < armor_cap:
-            armor.append((-score, e["id"], e))
-        if e["kind"] == "weapon" and not owns_pickup(name, p["carrying"]):
-            weapons.append((length, e["id"], e))
+        useful_health = e["kind"] == "health" and p["health"] < health_cap
+        useful_armor = (e["kind"] == "armor" and p["armor"] < armor_cap) or (
+            name == "Megasphere" and not useful_health and p["armor"] < 200
+        )
+        useful_weapon = e["kind"] == "weapon" and not owns_pickup(name, p["carrying"])
         useful_ammo = (
             name in ("Clip", "ClipBox", "Chaingun")
             and any(w["slot"] in (2, 4) and w["ammo"] < 20 for w in p["carrying"])
@@ -320,6 +307,19 @@ def build_menu(state, nav):
             name in ("Shell", "ShellBox", "Shotgun", "SuperShotgun")
             and any(w["slot"] == 3 and w["ammo"] < 4 for w in p["carrying"])
         )
+        if not (useful_health or useful_armor or useful_weapon or useful_ammo):
+            continue
+        path = nav.path(pos, [e["x"], e["y"]])
+        length = route_length(path)
+        if not path or dist(path[-1], [e["x"], e["y"]]) > 32:
+            continue
+        score = benefit / max(48, length)
+        if useful_health:
+            health.append((-score, e["id"], e))
+        if useful_armor:
+            armor.append((-score, e["id"], e))
+        if useful_weapon:
+            weapons.append((length, e["id"], e))
         if useful_ammo:
             ammunition.append((length, e["id"], e))
     for options, kind in [

@@ -115,6 +115,61 @@ def test_pickup_selection_tries_another_route_when_first_is_blocked(navigator, m
     assert any(option["id"] == "health_Medikit_1" for option in omitted)
 
 
+def test_nearby_pickups_do_not_hide_useful_medikit_or_weapon(navigator, monkeypatch):
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu
+
+    fixture = json.loads((GOLDEN / "observations" / "map01_seed17-request077.json").read_text())
+    nav = navigator(fixture["map"])
+    restore_nav(nav, fixture["nav"])
+    state = Run.state_for_model(model_context(fixture["harness"]))
+    p = state["player"]
+    p["health"], p["armor"] = 50, 200
+    p["carrying"] = [{"slot": 4, "name": "chaingun", "ammo": 100, "count": 1}]
+    state.update(enemies=[], remembered=[], navigation=[], projectiles=[])
+    state["items"] = (
+        [
+            {
+                "id": f"HealthBonus_{i}",
+                "kind": "health",
+                "label": "bonus",
+                "x": p["x"] + 10 + i,
+                "y": p["y"],
+            }
+            for i in range(4)
+        ]
+        + [
+            {
+                "id": f"Chaingun_{i}",
+                "kind": "weapon",
+                "label": "chaingun",
+                "x": p["x"] + 20 + i,
+                "y": p["y"],
+            }
+            for i in range(4)
+        ]
+        + [
+            {
+                "id": "Medikit_9",
+                "kind": "health",
+                "label": "medikit",
+                "x": p["x"] + 100,
+                "y": p["y"],
+            },
+            {
+                "id": "Shotgun_9",
+                "kind": "weapon",
+                "label": "shotgun",
+                "x": p["x"] + 110,
+                "y": p["y"],
+            },
+        ]
+    )
+    monkeypatch.setattr(nav, "path", lambda start, end: [start, end])
+    menu, _ = build_menu(state, nav)
+    assert {"health_Medikit_9", "weapon_Shotgun_9"} <= {option["id"] for option in menu}
+
+
 @pytest.mark.parametrize("path", FIXTURES, ids=[path.stem for path in FIXTURES])
 def test_decision_functions_repeat_the_recording(path, navigator):
     from jevdoom.run import Run
