@@ -549,8 +549,8 @@ def build_menu(state, nav):
     unexplained_damage = state.get("just_took_damage", False) and not enemies
     repeated_empty = len(recent) >= 2 and all(
         x["tactic"] == "observe"
-        and not x.get("measured", {}).get("new_visible")
-        and not x.get("measured", {}).get("new_navigation")
+        and x.get("measured", {}).get("new_visible") == []
+        and x.get("measured", {}).get("new_navigation") == []
         for x in recent[-2:]
     )
     if not menu or ((contradiction or unexplained_damage) and not repeated_empty):

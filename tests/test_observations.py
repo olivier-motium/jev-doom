@@ -53,6 +53,11 @@ def test_successful_observations_do_not_hide_unexplained_damage(navigator):
     state = Run.state_for_model(context)
     menu, _ = build_menu(state, nav)
     assert any(option["id"] == "observe" for option in menu)
+    for outcome in context.tactic_outcomes:
+        del outcome["measured"]
+    state = Run.state_for_model(context)
+    menu, _ = build_menu(state, nav)
+    assert any(option["id"] == "observe" for option in menu)
 
 
 def test_pickups_above_normal_health_and_armor_limits(navigator, monkeypatch):

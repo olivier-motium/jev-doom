@@ -23,10 +23,12 @@ def state_for_model(observation, objective, exploration_target, tactic_outcomes,
             **(
                 {
                     "measured": {
-                        k: o["measured"].get(k, []) for k in ("new_visible", "new_navigation")
+                        k: o["measured"][k]
+                        for k in ("new_visible", "new_navigation")
+                        if k in o["measured"]
                     }
                 }
-                if o.get("prediction", {}).get("kind") == "observation"
+                if o.get("prediction", {}).get("kind") == "observation" and "measured" in o
                 else {}
             ),
         }
