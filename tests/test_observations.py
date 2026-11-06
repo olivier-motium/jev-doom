@@ -35,6 +35,46 @@ def test_there_are_twelve_fixtures():
     assert len(FIXTURES) == 12
 
 
+def test_successful_observations_do_not_hide_unexplained_damage(navigator):
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu
+
+    fixture = json.loads((GOLDEN / "observations" / "map01_seed17-request077.json").read_text())
+    nav = navigator(fixture["map"])
+    restore_nav(nav, fixture["nav"])
+    context = model_context(fixture["harness"])
+    context.observation["enemies"] = []
+    context.observation["just_took_damage"] = True
+    context.tactic_outcomes = [
+        {"tactic": "observe", "prediction": {"kind": "observation"},
+         "prediction_status": "met", "measured": {"new_visible": ["enemy"], "new_navigation": []}}
+        for _ in range(2)
+    ]
+    state = Run.state_for_model(context)
+    menu, _ = build_menu(state, nav)
+    assert any(option["id"] == "observe" for option in menu)
+
+
+def test_pickups_above_normal_health_and_armor_limits(navigator, monkeypatch):
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu
+
+    fixture = json.loads((GOLDEN / "observations" / "map01_seed17-request077.json").read_text())
+    nav = navigator(fixture["map"])
+    restore_nav(nav, fixture["nav"])
+    state = Run.state_for_model(model_context(fixture["harness"]))
+    p = state["player"]
+    p["health"], p["armor"] = 100, 80
+    state.update(enemies=[], remembered=[], navigation=[], projectiles=[])
+    state["items"] = [
+        {"id": "Soulsphere_1", "kind": "health", "label": "Soulsphere", "x": p["x"] + 60, "y": p["y"]},
+        {"id": "BlueArmor_1", "kind": "armor", "label": "Blue armor", "x": p["x"], "y": p["y"] + 60},
+    ]
+    monkeypatch.setattr(nav, "path", lambda start, end: [start, end])
+    menu, _ = build_menu(state, nav)
+    assert {"health_Soulsphere_1", "armor_BlueArmor_1"} <= {o["id"] for o in menu}
+
+
 @pytest.mark.parametrize("path", FIXTURES, ids=[path.stem for path in FIXTURES])
 def test_decision_functions_repeat_the_recording(path, navigator):
     from jevdoom.run import Run

@@ -106,7 +106,7 @@ def build_menu(state, nav):
         if subject and (not path or dist(path[-1], [subject["x"], subject["y"]]) > 32):
             if needs_path:
                 omitted.append(
-                    dict(id=id, reason="No path reaching the actual subject within32units")
+                    dict(id=id, reason="No path reaching the actual subject within 32 units")
                 )
                 return
             # A visible threat needs no route: face and fire from here. A retreat point was chosen over clear seen floor and is walked on a straight line.
@@ -122,7 +122,7 @@ def build_menu(state, nav):
                 omitted.append(
                     dict(
                         id=id,
-                        reason="Route crosses a visible hostile within80units; clear or retreat first",
+                        reason="Route crosses a visible hostile within 80 units; clear or retreat first",
                         hostiles=blocking,
                     )
                 )
@@ -247,6 +247,7 @@ def build_menu(state, nav):
                 completion="Prediction satisfied, target invalid, newly blocked route, or time limit",
             )
         )
+        return True
 
     for e in state["navigation"]:
         # v48: the exit option states what activation does and the route as running seconds; ids, controls, priority and prediction unchanged.
@@ -258,7 +259,7 @@ def build_menu(state, nav):
                 e,
                 prediction=dict(
                     kind="exit",
-                    text="Native level-exit reward1; otherwise record approach distance",
+                    text="Native level-exit reward 1; otherwise record approach distance",
                 ),
                 priority=0,
             )
@@ -289,10 +290,23 @@ def build_menu(state, nav):
         length = route_length(path)
         if not path or dist(path[-1], [e["x"], e["y"]]) > 32:
             continue
-        score = effects.get(name, 0) / max(48, length)
-        if e["kind"] == "health" and p["health"] < 100:
+        health_cap = 200 if name in ("HealthBonus", "Soulsphere", "Megasphere") else 100
+        armor_cap = 200 if name in ("ArmorBonus", "BlueArmor", "Megasphere") else 100
+        if name == "Megasphere":
+            benefit = max(0, 200 - p["health"]) + max(0, 200 - p["armor"])
+        elif e["kind"] == "health":
+            benefit = min(effects.get(name, 0), max(0, health_cap - p["health"]))
+        elif e["kind"] == "armor":
+            benefit = (min(effects.get(name, 0), max(0, armor_cap - p["armor"]))
+                       if name == "ArmorBonus" else max(0, armor_cap - p["armor"]))
+        else:
+            benefit = 0
+        score = benefit / max(48, length)
+        if e["kind"] == "health" and p["health"] < health_cap:
             health.append((-score, e["id"], e))
-        if e["kind"] == "armor" and p["armor"] < 80:
+        elif name == "Megasphere" and p["armor"] < 200:
+            armor.append((-score, e["id"], e))
+        if e["kind"] == "armor" and p["armor"] < armor_cap:
             armor.append((-score, e["id"], e))
         if e["kind"] == "weapon" and not owns_pickup(name, p["carrying"]):
             weapons.append((length, e["id"], e))
@@ -311,22 +325,21 @@ def build_menu(state, nav):
         (weapons, "weapon"),
         (ammunition, "ammo"),
     ]:
-        if options:
-            e = min(options)[2]
+        for _, _, e in sorted(options):
             name = e["id"].rsplit("_", 1)[0]
             # v46: the option states the effect amount and the current level; the strategy and rubric wording are unchanged.
             amount = {
-                "health": f"+{effects.get(name, 0)} health{' to at most 100' if name in ('Medikit', 'Stimpack') else ''}, now {p['health']}/100",
+                "health": f"+{effects.get(name, 0)} health, now {p['health']}, cap {200 if name in ('HealthBonus', 'Soulsphere', 'Megasphere') else 100}",
                 "armor": (
                     f"armor to {effects.get(name, 0)}"
-                    if name in ("GreenArmor", "BlueArmor")
+                    if name in ("GreenArmor", "BlueArmor", "Megasphere")
                     else f"+{effects.get(name, 0)} armor"
                 )
                 + f", now {p['armor']}",
                 "weapon": f"weapon {name} for slot {slots.get(name)}, carrying {', '.join(w['name'] for w in p['carrying'])}",
                 "ammo": f"ammo {name}; current {p['weapon']} has {p['ammo']}",
             }[kind]
-            add(
+            if add(
                 kind + "_" + e["id"],
                 "Approach " + e["label"] + " (" + amount + ") while covering the route",
                 kind,
@@ -334,7 +347,8 @@ def build_menu(state, nav):
                 priority=(
                     2 if kind == "health" and p["health"] < 50 else 6 if kind == "armor" else 8
                 ),
-            )
+            ):
+                break
     if nearest:
         add(
             "clear_" + nearest["id"],
@@ -363,7 +377,7 @@ def build_menu(state, nav):
                     enemy_position=[nearest["x"], nearest["y"]],
                     before_distance=nearest["distance"],
                     expected_increase_units=32,
-                    text="Increase separation from the locked threat by32units; report actual damage separately",
+                    text="Increase separation from the locked threat by 32 units; report actual damage separately",
                 ),
                 priority=1 if p["health"] <= 30 else 15,
                 needs_path=False,

@@ -18,7 +18,10 @@ def state_for_model(observation, objective, exploration_target, tactic_outcomes,
     state.get("survival", {}).pop("active_escape", None)
     state["exploration_target"] = exploration_target
     state["recent_tactic_outcomes"] = [
-        {k: v for k, v in o.items() if k != "measured"} for o in list(tactic_outcomes)[-5:]
+        {**{k: v for k, v in o.items() if k != "measured"},
+         **({"measured": {k: o["measured"].get(k, []) for k in ("new_visible", "new_navigation")}}
+            if o.get("prediction", {}).get("kind") == "observation" else {})}
+        for o in list(tactic_outcomes)[-5:]
     ]
     state["assumptions"] = (
         "Structured sensing of entities currently in view with exact positions and identities; remembered entities with ages; floor cells and wall pieces only where the view has reached them; wall faces classified by the texture the player sees; heights only for sectors in view; no static map, no line specials, no lift facts out of view. Hit, damage, kill, item and secret counters are evaluator evidence and are not shown; outcome feedback carries HUD health and armor changes only."
