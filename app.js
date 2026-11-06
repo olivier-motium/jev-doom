@@ -193,7 +193,7 @@ function render(next) {
   const applied = replay ? [...(state.records || [])].reverse().find(record => record.accepted) : null;
   const replayOption = state.replay_option || applied?.option;
   const replayFallback = replayOption?.label ? readableLabel(replayOption.label) : (applied || replayOption) ? 'Decision applied' : 'No decision yet';
-  text('objective', state.objective?.subject?.label || state.objective?.goal || (replay ? replayFallback : 'Waiting for a decision.'));
+  text('objective', replay ? replayFallback : (state.objective?.subject?.label || state.objective?.goal || 'Waiting for a decision.'));
   if (pendingOrder !== null && state.order === pendingOrder) {
     if ($('orders').value === pendingOrder) editing = false;
     pendingOrder = null;

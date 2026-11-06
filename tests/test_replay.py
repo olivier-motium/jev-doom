@@ -17,7 +17,7 @@ from jevdoom.run import Run
 pytestmark = pytest.mark.engine
 
 
-def test_replay_uses_recorded_objective_and_latest_applied_option(tmp_path):
+def test_replay_shows_latest_applied_option_without_an_objective(tmp_path):
     events = [
         {"type": "episode_start", "config": {}},
         {"type": "request", "state": {"tick": 2, "objective": {"goal": "reach_exit"}}},
@@ -68,9 +68,9 @@ def test_replay_uses_recorded_objective_and_latest_applied_option(tmp_path):
         return replay.view_port.read()[0]
 
     assert snapshot(1)["objective"] is None and snapshot(1)["replay_option"] is None
-    assert snapshot(2)["objective"] == {"goal": "reach_exit"}
+    assert snapshot(2)["objective"] is None and snapshot(2)["replay_option"] is None
     assert snapshot(3)["objective"] is None and snapshot(3)["replay_option"]["label"] == "Explore"
-    assert snapshot(4)["objective"] == {"subject": {"label": "Door"}}
+    assert snapshot(4)["objective"] is None and snapshot(4)["replay_option"]["label"] == "Explore"
     assert snapshot(6)["objective"] is None and snapshot(6)["replay_option"]["label"] == "Fight"
 
 
