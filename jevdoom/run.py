@@ -114,6 +114,8 @@ class Run:
         self.map = {}
         self.busy = False
         self.pending_billed = False
+        self.pending_since = None
+        self.pending_stalled = False
         self.episode = 0
         self.seq = 0
         self.objective = None
@@ -715,6 +717,10 @@ class Run:
         self.decider.submit(job)
         self.busy = True
         self.pending_billed = self.config["controller"] != "local"
+        self.pending_since = now
+        self.pending_stalled = False
+        if self.started_play and self.config.get("timing") == "pause_assisted" and self.pause_started is None:
+            self.pause_started = now
         self.last_dispatch = now
         if self.active_tactic:
             self.active_tactic["prefetch_requested"] = True
@@ -781,6 +787,12 @@ class Run:
     def accept_reply(self, job, r):
         self.busy = False
         self.pending_billed = False
+        stalled = self.pending_stalled
+        self.pending_since = None
+        self.pending_stalled = False
+        if self.status == "running" and self.pause_started is not None:
+            self.paused_seconds += self.clock() - self.pause_started
+            self.pause_started = None
         provider = job.get("provider", "gateway")
         if job.get("controller") != "local":
             settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
@@ -886,11 +898,12 @@ class Run:
                 record["override_reasons"].append(
                     "Provider failure; recovery bound exhausted or non-transient"
                 )
-        elif self.status == "waiting_provider":
+        elif stalled:
             self.capture()
             self.status = "warming"
+            self.decision_tick = self.sim_ticks - 105
             record["override_reasons"].append(
-                "Provider stall paused simulation; late answer discarded; fresh snapshot required"
+                "Provider stall: late answer discarded; fresh snapshot required"
             )
             self.log(
                 "stall_answer_discarded", request=job["id"], game_tick=self.observation["tick"]
@@ -1037,7 +1050,7 @@ class Run:
         values = [0] * len(BUTTONS)
         a = self.last_action
         p = self.observation.get("player", {})
-        if self.status != "running":
+        if self.status not in ("running", "waiting_provider"):
             return values
         if (
             self.active_tactic
@@ -1237,7 +1250,8 @@ class Run:
                 ):
                     self.status = "paused"
                     self.control_rev += 1
-                    self.pause_started = self.clock()
+                    if self.pause_started is None:
+                        self.pause_started = self.clock()
                     self.last_action = None
                     self.engine.release()
                     self.controls = {"released": True, "reason": "paused"}
@@ -1252,6 +1266,13 @@ class Run:
                     self.objective = None
                     self.control_rev += 1
                     self.log("orders", text=self.order, revision=self.order_rev)
+            if (self.busy and self.pending_since is not None and not self.pending_stalled
+                    and self.status in ("running", "warming")
+                    and self.clock() - self.pending_since >= 2):
+                self.pending_stalled = True
+                self.stall_total += 1
+                self.status = "waiting_provider"
+                self.log("provider_stall", game_tick=self.observation.get("tick"), seconds=2)
             while reply := self.decider.poll():
                 job, response = reply
                 self.log(
@@ -1269,7 +1290,7 @@ class Run:
                     attempt=self.recovery_attempts,
                     game_tick=self.observation["tick"],
                 )
-            if self.status == "running" and not (
+            if self.status in ("running", "waiting_provider") and self.started_play and not (
                 self.busy and self.config.get("timing") == "pause_assisted"
             ):
                 buttons = self.motor()
@@ -1300,7 +1321,7 @@ class Run:
                         )
             elif (
                 self.config.get("timing", "real_time") == "real_time"
-                and self.status in ("recovering", "waiting_provider", "warming")
+                and self.status in ("recovering", "warming")
                 and self.started_play
                 and not self.engine.status().finished
             ):
