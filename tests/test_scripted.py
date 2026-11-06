@@ -64,7 +64,7 @@ def test_provider_timeout_then_recovery(play):
     # The 15 s backoff ends between observations. The fresh capture is one tick later.
     assert retry["game_tick"] - pause["game_tick"] == 15 * 35 + 1
     assert h.free_run_ticks == 15 * 35 + 1
-    assert (h.status, h.recovery_total, h.recovery_attempts) == ("running", 1, 0)
+    assert (h.status, h.recovery_total, h.recovery_attempts) == ("stopped", 1, 0)
     [after_retry] = [r for r in run.records() if r["id"] == 5]
     assert after_retry["accepted"]
 

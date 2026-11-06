@@ -102,6 +102,7 @@ def test_local_start_reaches_engine_without_charges():
     assert engine.ended.wait(timeout=10)
     assert run.error is None
     assert engine.buttons
+    assert store.result["reason"] == "stopped"
     assert store.ledger["calls"] == 0
     assert store.ledger["charged_usd"] == 0
     assert any(
@@ -157,3 +158,21 @@ def test_demo_requires_all_recording_files(tmp_path):
     assert not complete_recording(tmp_path)
     (tmp_path / "result.json").touch()
     assert complete_recording(tmp_path)
+
+
+def test_paused_episode_rejects_start_and_invalidates_control(monkeypatch):
+    from conftest import IdleThread
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading, "Thread", IdleThread)
+        run = Run(engine=FakeEngine(), decider=ImmediateLocal(), store=MemoryStore())
+    run.new_game()
+    run.commands.put(("start", {"map": "MAP01", "controller": "local"}))
+    run.tick()
+    episode, revision = run.episode, run.control_rev
+    run.commands.put(("pause", {}))
+    run.tick()
+    assert run.status == "paused" and run.control_rev == revision + 1
+    run.commands.put(("start", {"map": "MAP01", "controller": "local"}))
+    run.tick()
+    assert run.episode == episode and run.status == "paused"
