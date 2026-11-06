@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      PYTHONHASHSEED: '0'
+      TYPESAFE_API_KEY: ''
+      AI_GATEWAY_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: freedoom-0.13.0
+      - run: pip install -r requirements-dev.txt
+      - run: python download_assets.py
+      - run: ruff check .
+      - name: Tests without the engine
+        run: pytest -m 'not engine and not billed'
+      - name: Engine tests, one file per process
+        run: |
+          for file in tests/test_golden.py tests/test_engine_local.py tests/test_play.py tests/test_scripted.py tests/test_replay.py tests/test_play_contract.py; do
+            timeout 15m pytest "$file" -m 'engine and not billed'
+          done
