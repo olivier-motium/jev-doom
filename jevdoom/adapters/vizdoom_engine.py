@@ -138,15 +138,24 @@ class VizdoomEngine:
         self.game.set_action([0] * len(BUTTONS))
 
     def close(self):
+        staged = None
         try:
             if self.game is not None:
                 self.game.close()
-                self.game = None
             if self.recording_started:
-                shutil.move(str(self.temporary_path), str(self.record_destination))
-                self.recording_started = False
+                fd, name = tempfile.mkstemp(
+                    prefix=".episode-", suffix=".tmp", dir=self.record_destination.parent
+                )
+                staged = Path(name)
+                os.close(fd)
+                shutil.copyfile(self.temporary_path, staged)
+                os.replace(staged, self.record_destination)
         finally:
-            if self.temporary_path is not None and not self.recording_started:
+            self.game = None
+            if staged is not None:
+                staged.unlink(missing_ok=True)
+            if self.temporary_path is not None:
                 self.temporary_path.unlink(missing_ok=True)
-                self.temporary_path = None
-                self.record_destination = None
+            self.temporary_path = None
+            self.record_destination = None
+            self.recording_started = False

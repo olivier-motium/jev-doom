@@ -147,3 +147,20 @@ def test_record_and_replay_use_short_temporary_paths(monkeypatch, tmp_path):
     assert replay_temp != destination and len(str(replay_temp)) < len(str(destination))
     engine.close()
     assert destination.read_bytes() == b"recording" and not replay_temp.exists()
+
+    existing = tmp_path / "existing.lmp"
+    existing.write_bytes(b"previous complete recording")
+    engine.start("MAP01", 3, 17, record_path=existing)
+    failed_temp = games[-1].path
+    with monkeypatch.context() as patch:
+
+        def fail_copy(source, target):
+            Path(target).write_bytes(b"partial")
+            raise OSError("copy failed")
+
+        patch.setattr(vizdoom_engine.shutil, "copyfile", fail_copy)
+        with pytest.raises(OSError, match="copy failed"):
+            engine.close()
+    assert existing.read_bytes() == b"previous complete recording"
+    assert not failed_temp.exists()
+    assert not list(tmp_path.glob(".episode-*.tmp"))
