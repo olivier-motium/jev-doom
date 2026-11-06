@@ -31,9 +31,9 @@ def projectile_sidestep(p, b):
     return "left" if wx * lx + wy * ly >= 0 else "right"
 
 
-def closing_projectile(state):
-    """The visible projectile that will pass within40units of the player between0.4and3seconds if the player stays; None otherwise."""
-    balls = [
+def closing_projectiles(state):
+    """Visible projectiles predicted to pass within 40 units in 0.4 to 3 seconds."""
+    return [
         b
         for b in state.get("projectiles", [])
         if b.get("visible", True)
@@ -41,8 +41,13 @@ def closing_projectile(state):
         and b["closest_approach_units_if_player_stays"] < 40
         and 0.4 <= (b.get("closest_approach_seconds_if_player_stays") or 0) <= 3
     ]
-    return (
-        min(balls, key=lambda x: x["closest_approach_seconds_if_player_stays"]) if balls else None
+
+
+def closing_projectile(state):
+    return min(
+        closing_projectiles(state),
+        key=lambda x: x["closest_approach_seconds_if_player_stays"],
+        default=None,
     )
 
 

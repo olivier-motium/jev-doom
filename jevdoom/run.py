@@ -34,7 +34,7 @@ from jevdoom.core.catalog import (
 from jevdoom.core.tactics import (
     MODES,
     build_menu,
-    closing_projectile,
+    closing_projectiles,
     fixed_select,
     tactic_questions,
     measure,
@@ -668,9 +668,8 @@ class Run:
         if self.busy or self.status not in ("warming", "running"):
             return
         now = self.clock()
-        projectile = closing_projectile(self.observation)
-        projectile_id = projectile.get("id") if projectile else None
-        new_projectile = projectile_id and projectile_id not in self.decision_projectiles
+        projectile_ids = {p["id"] for p in closing_projectiles(self.observation) if p.get("id")}
+        new_projectile = bool(projectile_ids - self.decision_projectiles)
         if now - self.last_dispatch < 0.12 and not new_projectile:
             return
         enemies = {e["id"] for e in self.observation.get("enemies", [])}
@@ -732,8 +731,7 @@ class Run:
         self.decision_tick = self.sim_ticks
         self.decision_health = self.observation["player"]["health"]
         self.decision_enemies = enemies
-        if projectile_id:
-            self.decision_projectiles.add(projectile_id)
+        self.decision_projectiles.update(projectile_ids)
 
     def start_option(self, job, picks, selected, selector):
         option = copy.deepcopy(
