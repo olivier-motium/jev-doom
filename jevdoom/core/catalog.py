@@ -90,9 +90,10 @@ def owns_pickup(name, carrying):
     weapon = next((item for item in carrying if item["slot"] == slot), None)
     if weapon is None:
         return False
-    if name in ("Chainsaw", "Shotgun", "SuperShotgun"):
+    # Slot 3 cannot distinguish an SSG-only inventory, which may still chase another SSG.
+    if name in ("Chainsaw", "SuperShotgun"):
         return weapon.get("count", 1) >= 2
-    return True
+    return weapon.get("count", 1) >= 1
 
 
 def category(name):

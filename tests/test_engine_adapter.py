@@ -17,6 +17,8 @@ def test_shared_weapon_slots_do_not_claim_an_unknown_pickup():
     assert "WEAPON1" in VARIABLES and "WEAPON3" in VARIABLES
     assert not owns_pickup("Chainsaw", [{"slot": 1, "count": 1}])
     assert owns_pickup("Chainsaw", [{"slot": 1, "count": 2}])
+    assert not owns_pickup("Shotgun", [{"slot": 3, "count": 0}])
+    assert owns_pickup("Shotgun", [{"slot": 3, "count": 1}])
     assert not owns_pickup("SuperShotgun", [{"slot": 3, "count": 1}])
     assert owns_pickup("SuperShotgun", [{"slot": 3, "count": 2}])
 
