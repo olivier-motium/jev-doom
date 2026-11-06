@@ -332,7 +332,12 @@ def build_menu(state, nav):
             name = e["id"].rsplit("_", 1)[0]
             # v46: the option states the effect amount and the current level; the strategy and rubric wording are unchanged.
             amount = {
-                "health": f"+{effects.get(name, 0)} health, now {p['health']}, cap {200 if name in ('HealthBonus', 'Soulsphere', 'Megasphere') else 100}",
+                "health": (
+                    "health to 200"
+                    if name == "Megasphere"
+                    else f"+{min(effects.get(name, 0), max(0, (200 if name in ('HealthBonus', 'Soulsphere') else 100) - p['health']))} health"
+                )
+                + f", now {p['health']}",
                 "armor": (
                     f"armor to {effects.get(name, 0)}"
                     if name in ("GreenArmor", "BlueArmor", "Megasphere")

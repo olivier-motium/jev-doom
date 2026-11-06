@@ -92,6 +92,29 @@ def test_pickups_above_normal_health_and_armor_limits(navigator, monkeypatch):
     assert {"health_Soulsphere_1", "armor_BlueArmor_1"} <= {o["id"] for o in menu}
 
 
+def test_pickup_selection_tries_another_route_when_first_is_blocked(navigator, monkeypatch):
+    from jevdoom.run import Run
+    from jevdoom.core.tactics import build_menu
+
+    fixture = json.loads((GOLDEN / "observations" / "map01_seed17-request077.json").read_text())
+    nav = navigator(fixture["map"])
+    restore_nav(nav, fixture["nav"])
+    state = Run.state_for_model(model_context(fixture["harness"]))
+    p = state["player"]
+    p["health"] = 50
+    enemy = dict(state["enemies"][0], x=p["x"] + 50, y=p["y"], distance=50)
+    state.update(enemies=[enemy], remembered=[], navigation=[], projectiles=[])
+    state["items"] = [
+        {"id": "Medikit_1", "kind": "health", "label": "Medikit", "x": p["x"] + 100, "y": p["y"]},
+        {"id": "Medikit_2", "kind": "health", "label": "Medikit", "x": p["x"], "y": p["y"] + 110},
+    ]
+    monkeypatch.setattr(nav, "path", lambda start, end: [start, end])
+    monkeypatch.setattr(nav, "escape_point", lambda *args: None)
+    menu, omitted = build_menu(state, nav)
+    assert any(option["id"] == "health_Medikit_2" for option in menu)
+    assert any(option["id"] == "health_Medikit_1" for option in omitted)
+
+
 @pytest.mark.parametrize("path", FIXTURES, ids=[path.stem for path in FIXTURES])
 def test_decision_functions_repeat_the_recording(path, navigator):
     from jevdoom.run import Run
