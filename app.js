@@ -190,7 +190,10 @@ function render(next) {
   text('selector', config.controller === 'local' ? 'Local rule, no model' : config.controller === 'replay' ? 'Replay' : 'Jev');
   text('setup', replay ? `Recorded run: ${state.result?.reason || 'playing'}; no model or provider call.` : controller === 'local' ? 'Local rule uses no key and makes no model call.' : 'Check the selected provider before starting. Checking makes one billed call.');
   $('stats').replaceChildren(stat('Health', player.health ?? '—'), stat('Armor', player.armor ?? '—'), stat('Ammo', player.ammo ?? '—'), stat('Game seconds', progress.game_seconds ?? '—'));
-  text('objective', state.objective?.subject?.label || state.objective?.goal || 'Waiting for a decision.');
+  const applied = replay ? [...(state.records || [])].reverse().find(record => record.accepted) : null;
+  const replayOption = state.replay_option || applied?.option;
+  const replayFallback = replayOption?.label ? readableLabel(replayOption.label) : (applied || replayOption) ? 'Decision applied' : 'No decision yet';
+  text('objective', state.objective?.subject?.label || state.objective?.goal || (replay ? replayFallback : 'Waiting for a decision.'));
   if (pendingOrder !== null && state.order === pendingOrder) {
     if ($('orders').value === pendingOrder) editing = false;
     pendingOrder = null;

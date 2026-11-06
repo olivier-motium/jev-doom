@@ -29,6 +29,31 @@ class ReplaySession:
             raise ValueError("Replay trace has no episode_start")
         self.result = json.loads(result_path.read_text())
         self.config = dict(start["config"], controller="replay", provider="Replay", model="Replay")
+        self.record_order = {
+            event["record"]["id"]: index
+            for index, event in enumerate(events)
+            if event["type"] == "response"
+        }
+        self.objectives = []
+        self.applied_options = []
+        for index, event in enumerate(events):
+            if event["type"] == "tactic_start":
+                option = event.get("option")
+                tick = event.get("started_tick", event.get("before", {}).get("tick"))
+                if isinstance(option, dict) and isinstance(tick, (int, float)):
+                    self.applied_options.append((tick, index, option))
+                objective = event.get("objective")
+            elif event["type"] == "request":
+                state = event.get("state", {})
+                objective, tick = state.get("objective"), state.get("tick")
+            elif event["type"] == "response" and event["record"].get("accepted"):
+                record = event["record"]
+                objective = record.get("objective")
+                tick = record.get("tick", 0) + record.get("decision_age_ticks", 0)
+            else:
+                continue
+            if isinstance(objective, dict) and isinstance(tick, (int, float)):
+                self.objectives.append((tick, index, objective))
         self.records = sorted(
             (event["record"] for event in events if event["type"] == "response"),
             key=lambda record: record.get("tick", 0) + record.get("decision_age_ticks", 0),
@@ -61,13 +86,32 @@ class ReplaySession:
         observation = dict(
             tick=frame.tic, player=player, progress={"game_seconds": round(frame.tic / 35, 2)}
         )
+        applied = [
+            (
+                record.get("tick", 0) + record.get("decision_age_ticks", 0),
+                self.record_order.get(record["id"], -1),
+                record.get("option"),
+            )
+            for record in shown
+            if record.get("accepted")
+        ]
+        applied.extend(entry for entry in self.applied_options if entry[0] <= frame.tic)
+        latest = max(applied, key=lambda entry: entry[:2]) if applied else None
+        last_applied = latest[:2] if latest else (-1, -1)
+        objectives = [
+            entry
+            for entry in self.objectives
+            if last_applied <= entry[:2] and entry[0] <= frame.tic
+        ]
+        objective = max(objectives, key=lambda entry: entry[:2])[2] if objectives else None
         snapshot = dict(
             status=status,
             error=None,
             config=self.config,
             observation=observation,
             records=copy.deepcopy(shown),
-            objective=None,
+            objective=copy.deepcopy(objective),
+            replay_option=copy.deepcopy(latest[2]) if latest else None,
             tactics={},
             map={},
             controls={},
