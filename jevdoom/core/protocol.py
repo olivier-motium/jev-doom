@@ -5,6 +5,7 @@ import math
 
 from .catalog import EVALUATOR_FIELDS
 
+# The inherited 1,500-character cap bounds order text within the 48,000-byte decision request.
 MAX_ORDER_CHARS = 1500
 
 

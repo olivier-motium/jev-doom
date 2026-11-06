@@ -5,6 +5,7 @@ import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
 import math
+import logging
 import os
 import queue
 import threading
@@ -1264,6 +1265,11 @@ class Run:
                 elif cmd == "orders":
                     text = args.get("text")
                     if not isinstance(text, str) or len(text) > MAX_ORDER_CHARS:
+                        logging.getLogger(__name__).warning(
+                            "Order rejected: submitted length %s; limit %d",
+                            len(text) if isinstance(text, str) else "unavailable",
+                            MAX_ORDER_CHARS,
+                        )
                         self.error = f"Order must be text of at most {MAX_ORDER_CHARS} characters"
                         continue
                     self.order = text

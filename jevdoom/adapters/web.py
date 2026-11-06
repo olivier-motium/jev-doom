@@ -4,6 +4,7 @@ import asyncio
 import io
 import os
 import math
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from PIL import Image
@@ -173,8 +174,15 @@ def create_app(h):
                 }
         if command == "orders":
             if not isinstance(args.get("text"), str):
+                logging.getLogger(__name__).warning(
+                    "Order rejected: invalid text; submitted length unavailable; limit %d",
+                    MAX_ORDER_CHARS,
+                )
                 raise HTTPException(400, "Order text is required")
             if len(args["text"]) > MAX_ORDER_CHARS:
+                logging.getLogger(__name__).warning(
+                    "Order rejected: length %d exceeds limit %d", len(args["text"]), MAX_ORDER_CHARS
+                )
                 raise HTTPException(400, f"Order must be at most {MAX_ORDER_CHARS} characters")
         h.commands.put((command, args))
         return {"queued": command}
