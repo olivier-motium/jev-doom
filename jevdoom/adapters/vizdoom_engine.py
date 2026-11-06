@@ -1,6 +1,10 @@
 """Own ViZDoom state and expose frames and terminal results."""
 
 from types import SimpleNamespace
+import os
+from pathlib import Path
+import shutil
+import tempfile
 
 import vizdoom as vzd
 
@@ -18,12 +22,24 @@ class VizdoomEngine:
     def __init__(self, wad):
         self.wad = wad
         self.game = None
+        self.temporary_path = None
+        self.record_destination = None
+        self.recording_started = False
 
     def navigation_data(self):
         return self.wad.read_bytes()
 
     def start(self, map_name, skill, seed, record_path=None, replay_path=None):
         self.close()
+        if record_path and replay_path:
+            raise ValueError("Cannot record and replay the same episode")
+        try:
+            return self._start(map_name, skill, seed, record_path, replay_path)
+        except BaseException:
+            self.close()
+            raise
+
+    def _start(self, map_name, skill, seed, record_path, replay_path):
         self.game = game = vzd.DoomGame()
         game.set_doom_game_path(str(self.wad))
         game.set_doom_map(map_name.lower())
@@ -44,10 +60,20 @@ class VizdoomEngine:
         game.set_episode_timeout(35 * 600)
         game.set_map_exit_reward(1)
         game.init()
+        if replay_path or record_path:
+            # ViZDoom started with a 22-character path but hung at 161 characters on the MacBook.
+            fd, name = tempfile.mkstemp(
+                prefix="jd-", suffix=".lmp", dir="/tmp" if os.name == "posix" else None
+            )
+            os.close(fd)
+            self.temporary_path = Path(name)
         if replay_path:
-            game.replay_episode(str(replay_path))
+            shutil.copyfile(replay_path, self.temporary_path)
+            game.replay_episode(str(self.temporary_path))
         elif record_path:
-            game.new_episode(str(record_path))
+            self.record_destination = Path(record_path)
+            game.new_episode(str(self.temporary_path))
+            self.recording_started = True
         else:
             game.new_episode()
         return self.frame()
@@ -112,6 +138,15 @@ class VizdoomEngine:
         self.game.set_action([0] * len(BUTTONS))
 
     def close(self):
-        if self.game is not None:
-            self.game.close()
-            self.game = None
+        try:
+            if self.game is not None:
+                self.game.close()
+                self.game = None
+            if self.recording_started:
+                shutil.move(str(self.temporary_path), str(self.record_destination))
+                self.recording_started = False
+        finally:
+            if self.temporary_path is not None and not self.recording_started:
+                self.temporary_path.unlink(missing_ok=True)
+                self.temporary_path = None
+                self.record_destination = None

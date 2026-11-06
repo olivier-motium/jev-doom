@@ -99,3 +99,49 @@ def test_terminal_reason_uses_the_step_contract():
     assert end_reason(Step(None, True, False, False, 1, True)) == "level_complete"
     assert end_reason(Step(None, True, False, False, 0, False)) == "episode_ended_unverified"
     assert end_reason(Step(None, False, False, False, 0, False)) is None
+
+
+def test_record_and_replay_use_short_temporary_paths(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    class RecordingGame(FakeGame):
+        def __init__(self):
+            super().__init__()
+            self.path = None
+            self.recording = False
+
+        def new_episode(self, path):
+            self.path = Path(path)
+            self.recording = True
+
+        def replay_episode(self, path):
+            self.path = Path(path)
+            assert self.path.read_bytes() == b"recording"
+
+        def close(self):
+            if self.recording:
+                self.path.write_bytes(b"recording")
+
+    games = []
+
+    def make_game():
+        game = RecordingGame()
+        games.append(game)
+        return game
+
+    monkeypatch.setattr(vizdoom_engine.vzd, "DoomGame", make_game)
+    engine = vizdoom_engine.VizdoomEngine("example.wad")
+    destination = tmp_path / ("long-" * 25) / "episode.lmp"
+    destination.parent.mkdir()
+    engine.start("MAP01", 3, 17, record_path=destination)
+    recorded_temp = games[-1].path
+    assert len(str(recorded_temp)) < len(str(destination))
+    assert not destination.exists()
+    engine.close()
+    assert destination.read_bytes() == b"recording" and not recorded_temp.exists()
+
+    engine.start("MAP01", 3, 17, replay_path=destination)
+    replay_temp = games[-1].path
+    assert replay_temp != destination and len(str(replay_temp)) < len(str(destination))
+    engine.close()
+    assert destination.read_bytes() == b"recording" and not replay_temp.exists()
