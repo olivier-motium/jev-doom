@@ -55,6 +55,9 @@ def create_app(h):
                 if declared < 0:
                     return Response("Invalid Content-Length", status_code=400)
                 if declared > 48000:
+                    logging.getLogger(__name__).warning(
+                        "Request rejected: declared size %d; limit %d", declared, 48000
+                    )
                     return Response("Request too large", status_code=413)
             if request.headers.get("content-type", "").split(";")[0] != "application/json":
                 return Response("JSON required", status_code=415)
@@ -62,6 +65,9 @@ def create_app(h):
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > 48000:
+                    logging.getLogger(__name__).warning(
+                        "Request rejected: read size %d; limit %d", size, 48000
+                    )
                     return Response("Request too large", status_code=413)
                 chunks.append(chunk)
             request._body = b"".join(chunks)

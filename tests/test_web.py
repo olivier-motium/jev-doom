@@ -88,3 +88,12 @@ def test_overlong_order_is_rejected_without_queueing(caplog):
     allowed = json.dumps({"text": "x" * 1500}).encode()
     assert request(app, "/api/orders", body=allowed)[0] == 200
     assert h.commands.get()[1]["text"] == "x" * 1500
+
+
+def test_oversized_requests_log_the_declared_or_read_size(caplog):
+    h = SimpleNamespace(config={"provider_key": "gateway"}, commands=queue.Queue())
+    app = create_app(h)
+    assert request(app, "/api/start", length=48001)[0] == 413
+    assert request(app, "/api/start", body=b"x" * 48002)[0] == 413
+    assert "declared size 48001; limit 48000" in caplog.text
+    assert "read size 48002; limit 48000" in caplog.text
