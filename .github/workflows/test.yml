@@ -7,6 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Six 15-minute engine limits plus 20 minutes for setup and non-engine tests.
     timeout-minutes: 110
     env:
       PYTHONHASHSEED: '0'
@@ -29,6 +30,9 @@ jobs:
         run: pytest -m 'not engine and not billed'
       - name: Engine tests, one file per process
         run: |
+          status=0
           for file in tests/test_golden.py tests/test_engine_local.py tests/test_play.py tests/test_scripted.py tests/test_replay.py tests/test_play_contract.py; do
-            timeout 15m pytest "$file" -m 'engine and not billed'
+            # On 6 Nov 2026 test_play.py took 270–385 s on the MacBook queue; 15 minutes is over twice that.
+            timeout 15m pytest "$file" -m 'engine and not billed' || status=1
           done
+          exit "$status"
