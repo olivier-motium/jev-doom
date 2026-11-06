@@ -1,14 +1,10 @@
-"""Repo hygiene: ruff is clean, nothing private or binary is tracked, and Python size is reported.
-
-The size is a report, not a gate. See it with: pytest -s tests/test_hygiene.py
-"""
+"""Repo hygiene: ruff is clean and nothing private or binary is tracked."""
 
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LINES_BEFORE_REWORK = 5439  # formatted Python lines outside tests/ at 13589d2
 
 
 def tracked(*patterns):
@@ -43,9 +39,3 @@ def test_no_game_data_recordings_runs_or_env_are_tracked():
         or Path(name).name == ".env"
     ]
     assert banned == []
-
-
-def test_report_python_lines():
-    files = [ROOT / name for name in tracked("*.py") if not name.startswith("tests/")]
-    lines = sum(len(path.read_text().splitlines()) for path in files if path.exists())
-    print(f"\nPython lines outside tests/: {lines} (before the rework: {LINES_BEFORE_REWORK})")

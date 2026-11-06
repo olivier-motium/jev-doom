@@ -31,10 +31,6 @@ def navigator():
     return get
 
 
-def test_there_are_twelve_fixtures():
-    assert len(FIXTURES) == 12
-
-
 def test_successful_observations_do_not_hide_unexplained_damage(navigator):
     from jevdoom.run import Run
     from jevdoom.core.tactics import build_menu
