@@ -40,11 +40,12 @@ def test_gateway_drains_stderr_and_restarts_after_child_exit(monkeypatch):
         gateway.close()
 
 
-def test_gateway_times_out_and_recovers():
+def test_gateway_times_out_and_recovers(caplog):
     gateway = Gateway(Path.cwd(), [sys.executable, "-u", "-c", FAKE], timeout=0.2)
     try:
-        reply = gateway.ask(job("hang"))
+        reply = gateway.ask(dict(job("hang"), id=42))
         assert reply["error_name"] == "TimeoutError"
+        assert "request 42" in caplog.text and "deadline 0.200 s" in caplog.text
         gateway.timeout = 5
         assert gateway.ask(job("ok"))["ok"]
     finally:

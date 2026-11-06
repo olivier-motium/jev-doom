@@ -1,6 +1,7 @@
 """A bounded, restartable line-oriented gateway process."""
 
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -103,6 +104,12 @@ class Gateway:
                     raise error
                 line = self.lines.get(timeout=max(0, deadline - time.monotonic()))
             except queue.Empty as exc:
+                logging.getLogger(__name__).warning(
+                    "Gateway deadline: request %s, elapsed %.3f s, deadline %.3f s",
+                    job.get("id"),
+                    time.monotonic() - started,
+                    self.timeout,
+                )
                 raise TimeoutError("Gateway request timeout") from exc
             if line is None:
                 raise ConnectionError("Gateway adapter exited")
