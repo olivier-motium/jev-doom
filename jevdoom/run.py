@@ -431,11 +431,13 @@ class Run:
             ]
         )
         for lid, v in self.nav.observed_lines.items():
-            if not v["spans"] or v.get("open_tick") is not None:
+            if not v["spans"]:
                 continue
             base = LineString([v["a"], v["b"]])
             hit = None
             for s0, s1 in v["spans"]:
+                if self.nav.span_open(v, (s0, s1)):
+                    continue
                 a_ = base.interpolate(s0, normalized=True)
                 b_ = base.interpolate(s1, normalized=True)
                 x_ = ray.intersection(LineString([(a_.x, a_.y), (b_.x, b_.y)]))

@@ -87,7 +87,7 @@ def build_menu(state, nav):
     doors = [
         dict(id=v["id"], a=v["a"], b=v["b"])
         for v in nav.observed_lines.values()
-        if v["kind"] == "door" and v["spans"] and v.get("open_tick") is None
+        if v["kind"] == "door" and any(not nav.span_open(v, span) for span in v["spans"])
     ]
 
     def add(

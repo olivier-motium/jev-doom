@@ -20,11 +20,19 @@ class MotorResult:
 
 
 def same_door(nav, x, y):
-    def sides(line_id):
-        lines = [line for line in nav.lines if line["id"] == line_id]
-        return {line[k] for line in lines for k in ("r", "l")} - {None}
-
-    return bool(sides(x) & sides(y))
+    if x == y:
+        return True
+    if any(nav.observed_lines.get(i, {}).get("kind") != "door" for i in (x, y)):
+        return False
+    lines = {line["id"]: line for line in nav.lines if line["id"] in (x, y)}
+    if x not in lines or y not in lines:
+        return False
+    first, second = lines[x], lines[y]
+    if not ({first["r"], first["l"]} & {second["r"], second["l"]} - {None}):
+        return False
+    a, b, c, d = first["a"], first["b"], second["a"], second["b"]
+    # A matching door face has the same endpoints, or reversed endpoints.
+    return (dist(a, c) < 1 and dist(b, d) < 1) or (dist(a, d) < 1 and dist(b, c) < 1)
 
 
 def calculate_motor(
@@ -46,6 +54,7 @@ def calculate_motor(
     nav.cache = dict(nav.cache)
     nav._nb_cache = dict(nav._nb_cache)
     nav._edge_cache = dict(nav._edge_cache)
+    nav.door_push_started = dict(getattr(nav, "door_push_started", {}))
     nav.used = copy.copy(nav.used)
     use_latches = dict(use_latches)
     use_pulses = dict(use_pulses)
@@ -60,16 +69,31 @@ def calculate_motor(
     face = p["facing"]
     move = a["move"]
     destination = (a["snapshot"].get("objective") or {}).get("subject")
+    if not destination or move != "destination":
+        nav.door_push_started.clear()
+    else:
+        nav.door_push_started = {k: v for k, v in nav.door_push_started.items()
+                                 if k == destination.get("id")}
     waypoint = None
     if destination:
         if destination.get("through"):
             rec = nav.observed_lines.get(destination["id"])
-            if rec and rec.get("open_tick") is not None:
+            if rec and nav.point_is_open(rec, [destination["line_x"], destination["line_y"]]):
                 # The selected door option carries its own walk-through: while the piece is seen open, the route runs to the far side of the doorway.
                 wp = nav.waypoint(pos, destination["through"])
+                previous = observation.get("previous_controls", {}).get("MOVE", {})
+                previous_target = previous.get("destination") or {}
+                pushing = (move == "destination" and a["dodge"] == "carry_on"
+                           and a.get("control_rev", 0) == control_rev
+                           and previous_target.get("id") == destination["id"]
+                           and (previous.get("forward", 0) or previous.get("right", 0)))
+                if pushing:
+                    nav.door_push_started.setdefault(destination["id"], sim_ticks)
+                else:
+                    nav.door_push_started.pop(destination["id"], None)
                 if (
-                    wp
-                    and sim_ticks - stationary_since > 35
+                    wp and pushing
+                    and sim_ticks - max(stationary_since, nav.door_push_started[destination["id"]]) > 35
                     and dist(
                         pos,
                         [
@@ -80,16 +104,15 @@ def calculate_motor(
                     < 96
                 ):
                     # Pushed toward the doorway for a second without moving: the piece is not passable now, whatever the view said; it is a wall again until seen open.
-                    rec["open_tick"] = None
-                    nav._reach = None
-                    nav.cache.clear()
-                    emit(
-                        "door_push_blocked",
-                        line=destination["id"],
-                        game_tick=sim_ticks,
-                        player=[round(p["x"], 1), round(p["y"], 1)],
-                    )
-                    wp = None
+                    closed = nav.close_door(destination["id"], [destination["line_x"], destination["line_y"]])
+                    if closed:
+                        emit(
+                            "door_push_blocked",
+                            line=destination["id"],
+                            game_tick=sim_ticks,
+                            player=[round(p["x"], 1), round(p["y"], 1)],
+                        )
+                        wp = None
                 if wp:
                     destination = dict(
                         destination,

@@ -55,6 +55,7 @@ class Navigator:
         self.frame_hits = set()
         self._nb_cache = {}
         self._edge_cache = {}
+        self.door_push_started = {}
         self._reach = None
         self._geom_version = 0
         self._observed_union = GeometryCollection()
@@ -158,6 +159,7 @@ class Navigator:
         n = len(depth_columns)
         changed = False
         rays = []
+        hit_positions = defaultdict(list)
         for i, dv in enumerate(depth_columns):
             # Depth calibration against a known face at 15 distances (v64): distance = 7.1*dv + 14.4 map units (residuals within 16 units from 24 to 448); a zero reads as a surface about 14 units away, not as nothing.
             off = 45 - 90 * (i + 0.5) / n
@@ -224,6 +226,7 @@ class Navigator:
                             spans=[],
                         )
                     self.frame_hits.add(line["id"])
+                    hit_positions[line["id"]].append(tpos)
                     margin = 8 / max(1e-6, seg.length)
                     lo, hi = max(0, tpos - margin), min(1, tpos + margin)
                     if not any(s0 <= lo and hi <= s1 for s0, s1 in rec["spans"]):
@@ -231,69 +234,33 @@ class Navigator:
                         rec["spans"] = self._merge(rec["spans"])
                         changed = True
                         changed_lines.add(line["id"])
-        # Open state: a wall piece hit this frame is a wall; a piece that a ray passed through (reaching beyond it) is open now, for example a door that opened, and stops blocking until it is hit again.
         if rays:
             ray_union = prep(unary_union(rays))
             for lid, v in self.observed_lines.items():
-                if not v["spans"]:
-                    continue
-                if lid in self.frame_hits:
-                    if v.get("open_tick") is not None:
-                        v["open_tick"] = None
-                        changed = True
-                        changed_lines.add(lid)
-                    continue
                 base = LineString([v["a"], v["b"]])
-                crossed = False
+                opened = {tuple(span) for span in v.get("open_spans", [])}
+                opened.intersection_update(map(tuple, v["spans"]))
+                before = {tuple(span) for span in v.get("open_spans", [])}
                 for s0, s1 in v["spans"]:
+                    span = (s0, s1)
+                    if any(s0 <= t <= s1 for t in hit_positions.get(lid, [])):
+                        opened.discard(span)
+                        continue
                     a_ = base.interpolate(s0, normalized=True)
                     b_ = base.interpolate(s1, normalized=True)
-                    span_seg = LineString([(a_.x, a_.y), (b_.x, b_.y)])
-                    if not ray_union.crosses(span_seg):
-                        continue
-                    # The depth buffer quantizes to 8 units, so a ray stopped at the face itself can end up to two quanta past it; a piece counts as passed through only when a crossing ray ends at least 24 units beyond the line.
-                    if any(
-                        r.crosses(span_seg) and Point(r.coords[-1]).distance(base) >= 24
+                    segment = LineString([(a_.x, a_.y), (b_.x, b_.y)])
+                    if ray_union.crosses(segment) and any(
+                        r.crosses(segment) and Point(r.coords[-1]).distance(base) >= 24
                         for r in rays
                     ):
-                        crossed = True
-                        break
-                if crossed and v.get("open_tick") is None:
-                    v["open_tick"] = tick
+                        opened.add(span)
+                if opened != before:
+                    v["open_spans"] = sorted(opened)
                     changed = True
                     changed_lines.add(lid)
+                v["open_tick"] = tick if v["spans"] and len(opened) == len(v["spans"]) else None
         if changed:
-            segs = []
-            for v in self.observed_lines.values():
-                if v.get("open_tick") is not None:
-                    continue
-                base = LineString([v["a"], v["b"]])
-                for s0, s1 in v["spans"]:
-                    a = base.interpolate(s0, normalized=True)
-                    b = base.interpolate(s1, normalized=True)
-                    if a.distance(b) > 0.5:
-                        segs.append(LineString([(a.x, a.y), (b.x, b.y)]))
-            self._observed_union = unary_union(segs) if segs else GeometryCollection()
-            margin = PLAYER_RADIUS + 0.1
-            self._observed_blocked = (
-                unary_union(
-                    [
-                        MultiPoint(
-                            [
-                                (x + dx, y + dy)
-                                for x, y in s.coords
-                                for dx in (-margin, margin)
-                                for dy in (-margin, margin)
-                            ]
-                        ).convex_hull
-                        for s in segs
-                    ]
-                )
-                if segs
-                else GeometryCollection()
-            )
-            self._union_prep = prep(self._observed_union)
-            self._blocked_prep = prep(self._observed_blocked)
+            self._rebuild_walls()
         if changed or new_cells:
             # Route caches are keyed to real change: a new seen cell only re-opens its own 3x3 neighbourhood; a changed wall piece only the cells near it.
             self.cache.clear()
@@ -304,6 +271,56 @@ class Navigator:
             for lid in changed_lines:
                 v = self.observed_lines[lid]
                 self._invalidate_line(v["a"], v["b"])
+
+    @staticmethod
+    def span_open(record, span):
+        if "open_spans" not in record:
+            return record.get("open_tick") is not None
+        return tuple(span) in {tuple(item) for item in record["open_spans"]}
+
+    def _rebuild_walls(self):
+        segs = []
+        for record in self.observed_lines.values():
+            base = LineString([record["a"], record["b"]])
+            for span in record["spans"]:
+                if self.span_open(record, span):
+                    continue
+                a, b = (base.interpolate(t, normalized=True) for t in span)
+                if a.distance(b) > 0.5:
+                    segs.append(LineString([(a.x, a.y), (b.x, b.y)]))
+        self._observed_union = unary_union(segs) if segs else GeometryCollection()
+        margin = PLAYER_RADIUS + 0.1
+        self._observed_blocked = unary_union([
+            MultiPoint([(x + dx, y + dy) for x, y in seg.coords
+                        for dx in (-margin, margin) for dy in (-margin, margin)]).convex_hull
+            for seg in segs
+        ]) if segs else GeometryCollection()
+        self._union_prep = prep(self._observed_union)
+        self._blocked_prep = prep(self._observed_blocked)
+
+    def close_door(self, line_id, point):
+        record = self.observed_lines[line_id]
+        base = LineString([record["a"], record["b"]])
+        t = base.project(Point(point), normalized=True)
+        opened = [tuple(span) for span in record.get("open_spans", record["spans"]
+                  if record.get("open_tick") is not None else [])]
+        remaining = [span for span in opened if not span[0] <= t <= span[1]]
+        if len(remaining) == len(opened):
+            return False
+        record["open_spans"] = remaining
+        record["open_tick"] = None
+        self._rebuild_walls()
+        self.cache.clear()
+        self._reach = None
+        self._geom_version += 1
+        self._invalidate_line(record["a"], record["b"])
+        return True
+
+    def point_is_open(self, record, point):
+        base = LineString([record["a"], record["b"]])
+        t = base.project(Point(point), normalized=True)
+        return any(s0 <= t <= s1 and self.span_open(record, (s0, s1))
+                   for s0, s1 in record["spans"])
 
     def _invalidate_cell(self, c):
         for dx in (-1, 0, 1):
@@ -385,7 +402,7 @@ class Navigator:
 
     def _span_mid(self, v):
         base = LineString([v["a"], v["b"]])
-        s0, s1 = v["spans"][0][0], v["spans"][-1][1]
+        s0, s1 = v["spans"][0]
         m = base.interpolate((s0 + s1) / 2, normalized=True)
         return [m.x, m.y]
 
@@ -403,7 +420,7 @@ class Navigator:
                         a=[round(a.x, 1), round(a.y, 1)],
                         b=[round(b.x, 1), round(b.y, 1)],
                         kind=v["kind"],
-                        open=v.get("open_tick") is not None,
+                        open=self.span_open(v, (s0, s1)),
                     )
                 )
         return out
@@ -607,7 +624,8 @@ class Navigator:
         for id, v in self.observed_lines.items():
             if not v["spans"]:
                 continue
-            is_open = v.get("open_tick") is not None
+            span = min(v["spans"], key=lambda s: dist(self._span_mid(dict(v, spans=[s])), p))
+            is_open = self.span_open(v, span)
             # An open piece is a way through, not a target, unless it is a seen door: that one is offered as a walk-through while open.
             if is_open and v["kind"] != "door":
                 continue
@@ -624,10 +642,7 @@ class Navigator:
                     continue
             elif self.failed[id] >= 2:
                 continue
-            base = LineString([v["a"], v["b"]])
-            s0, s1 = v["spans"][0][0], v["spans"][-1][1]
-            m = base.interpolate((s0 + s1) / 2, normalized=True)
-            mid = [m.x, m.y]
+            mid = self._span_mid(dict(v, spans=[span]))
             if dist(mid, p) > 400:
                 continue
             dx = v["b"][0] - v["a"][0]
