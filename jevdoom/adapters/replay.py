@@ -39,6 +39,7 @@ class ReplaySession:
         self.engine = VizdoomEngine(Path(__file__).resolve().parents[2] / "assets/freedoom2.wad")
         self.recording = recording
         self.error = None
+        self.stopped = False
         self.start_lock = threading.Lock()
         self.thread = threading.Thread(target=self._play, daemon=True)
 
@@ -90,6 +91,8 @@ class ReplaySession:
                 replay_path=self.recording,
             )
             frame = self.engine.frame()
+            if frame is None and not self.stop_event.is_set():
+                raise RuntimeError("Replay produced no initial frame")
             while not self.stop_event.is_set() and frame is not None:
                 while (
                     self.records
@@ -103,7 +106,10 @@ class ReplaySession:
                 if step.terminal:
                     break
                 frame = self.engine.frame()
+                if frame is None and not self.stop_event.is_set():
+                    raise RuntimeError("Replay ended without a terminal step")
                 self.stop_event.wait(1 / 35)
+            self.stopped = self.stop_event.is_set()
             self._publish(
                 frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown
             )
@@ -120,6 +126,10 @@ class ReplaySession:
         if self.error is not None:
             state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
             state.update(status="replay_error", error=self.error, replay=True)
+            return state
+        if self.stopped or (self.stop_event.is_set() and self.thread.ident is None):
+            state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
+            state.update(status="replay_stopped", replay=True)
             return state
         return (
             copy.deepcopy(snapshot[0]) if snapshot else {"status": "booting", "config": self.config}
