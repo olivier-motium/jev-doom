@@ -212,9 +212,9 @@ def calculate_motor(
             enemy = next((e for e in observation["enemies"] if e["id"] == destination["id"]), None)
             firing_range = (
                 48
-                if p["weapon"] in ("fist", "chainsaw")
+                if p["weapon"] in ("fist", "chainsaw", "fist or chainsaw")
                 else 240
-                if p["weapon"] == "shotgun"
+                if p["weapon"] in ("shotgun", "shotgun or super shotgun")
                 else 384
             )
             if enemy and dist(pos, [enemy["x"], enemy["y"]]) <= firing_range:
@@ -258,7 +258,7 @@ def calculate_motor(
                     math.degrees(math.atan2(aimed["y"] - p["y"], aimed["x"] - p["x"])) - p["facing"]
                 )
             )
-            tolerance = 6 if p["weapon"] == "shotgun" else 3
+            tolerance = 6 if p["weapon"] in ("shotgun", "shotgun or super shotgun") else 3
             if aim_error > tolerance:
                 values[3] = 0
                 overrides.append(

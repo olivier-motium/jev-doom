@@ -28,8 +28,8 @@ from jevdoom.core.geometry import dist
 from jevdoom.core.catalog import (
     BUTTONS,
     EVALUATOR_FIELDS,
-    PICKUP_WEAPON_SLOTS,
     WEAPON_NAMES,
+    owns_pickup,
 )
 from jevdoom.core.tactics import (
     MODES,
@@ -332,20 +332,21 @@ class Run:
             hits_taken=int(var("HITS_TAKEN")),
         )
         p["carrying"] = [
-            dict(slot=i, name=WEAPON_NAMES[i], ammo=int(var("AMMO" + str(i))))
-            for i in range(1, 8)
+            dict(slot=i, name=WEAPON_NAMES[i], ammo=int(var("AMMO" + str(i))),
+                 count=int(var("WEAPON" + str(i))))
+            for i in WEAPON_NAMES
             if var("WEAPON" + str(i))
         ]
         if (self.objective or {}).get("goal") == "upgrade_weapon":
             subject = self.objective.get("subject") or {}
-            slot = PICKUP_WEAPON_SLOTS.get(subject.get("id", "").rsplit("_", 1)[0])
-            if slot in {w["slot"] for w in p["carrying"]} or subject.get("id") not in self.memory:
+            carried = owns_pickup(subject.get("id", "").rsplit("_", 1)[0], p["carrying"])
+            if carried or subject.get("id") not in self.memory:
                 self.log(
                     "objective_complete",
                     goal="upgrade_weapon",
                     subject=subject,
                     reason="Weapon now carried"
-                    if slot in {w["slot"] for w in p["carrying"]}
+                    if carried
                     else "Target no longer in observed memory",
                 )
                 self.objective = None

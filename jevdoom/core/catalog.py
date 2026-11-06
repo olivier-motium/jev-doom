@@ -66,25 +66,33 @@ WEAPONS = {
 }
 KEYS = {"BlueCard", "RedCard", "YellowCard", "BlueSkull", "RedSkull", "YellowSkull"}
 WEAPON_NAMES = {
-    1: "fist",
+    1: "fist or chainsaw",
     2: "pistol",
-    3: "shotgun",
+    3: "shotgun or super shotgun",
     4: "chaingun",
     5: "rocket launcher",
     6: "plasma rifle",
     7: "BFG",
-    8: "chainsaw",
-    9: "super shotgun",
 }
 PICKUP_WEAPON_SLOTS = {
     "Shotgun": 3,
-    "SuperShotgun": 9,
+    "SuperShotgun": 3,
     "Chaingun": 4,
     "RocketLauncher": 5,
     "PlasmaRifle": 6,
     "BFG9000": 7,
-    "Chainsaw": 8,
+    "Chainsaw": 1,
 }
+
+
+def owns_pickup(name, carrying):
+    slot = PICKUP_WEAPON_SLOTS.get(name)
+    weapon = next((item for item in carrying if item["slot"] == slot), None)
+    if weapon is None:
+        return False
+    if name in ("Chainsaw", "Shotgun", "SuperShotgun"):
+        return weapon.get("count", 1) >= 2
+    return True
 
 
 def category(name):
@@ -125,6 +133,6 @@ VARIABLES = (
     "HITS_TAKEN",
     "VELOCITY_X",
     "VELOCITY_Y",
-    *(f"AMMO{i}" for i in range(1, 8)),
-    *(f"WEAPON{i}" for i in range(1, 8)),
+    *(f"AMMO{i}" for i in WEAPON_NAMES),
+    *(f"WEAPON{i}" for i in WEAPON_NAMES),
 )

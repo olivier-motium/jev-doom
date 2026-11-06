@@ -7,7 +7,18 @@ import pytest
 pytest.importorskip("vizdoom")
 
 from jevdoom.adapters import vizdoom_engine
+from jevdoom.core.catalog import PICKUP_WEAPON_SLOTS, VARIABLES, owns_pickup
 from jevdoom.ports import end_reason
+
+
+def test_shared_weapon_slots_do_not_claim_an_unknown_pickup():
+    assert PICKUP_WEAPON_SLOTS["Chainsaw"] == 1
+    assert PICKUP_WEAPON_SLOTS["SuperShotgun"] == 3
+    assert "WEAPON1" in VARIABLES and "WEAPON3" in VARIABLES
+    assert not owns_pickup("Chainsaw", [{"slot": 1, "count": 1}])
+    assert owns_pickup("Chainsaw", [{"slot": 1, "count": 2}])
+    assert not owns_pickup("SuperShotgun", [{"slot": 3, "count": 1}])
+    assert owns_pickup("SuperShotgun", [{"slot": 3, "count": 2}])
 
 
 class FakeGame:

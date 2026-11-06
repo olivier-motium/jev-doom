@@ -2,6 +2,7 @@
 
 import math
 from shapely.geometry import LineString
+from .catalog import PICKUP_WEAPON_SLOTS, owns_pickup
 from .geometry import dist
 
 MODES = ("semantic_tactics", "local")
@@ -50,7 +51,6 @@ def build_menu(state, nav):
     pos = [p["x"], p["y"]]
     enemies = state["enemies"]
     nearest = min(enemies, key=lambda e: e["distance"], default=None)
-    owned = {w["slot"] for w in p["carrying"]}
     items = {
         e["id"]: e
         for e in state["items"] + state["remembered"]
@@ -266,15 +266,7 @@ def build_menu(state, nav):
     armor = []
     weapons = []
     ammunition = []
-    slots = {
-        "Shotgun": 3,
-        "SuperShotgun": 9,
-        "Chaingun": 4,
-        "RocketLauncher": 5,
-        "PlasmaRifle": 6,
-        "BFG9000": 7,
-        "Chainsaw": 8,
-    }
+    slots = PICKUP_WEAPON_SLOTS
     effects = {
         "Medikit": 25,
         "Stimpack": 10,
@@ -302,14 +294,14 @@ def build_menu(state, nav):
             health.append((-score, e["id"], e))
         if e["kind"] == "armor" and p["armor"] < 80:
             armor.append((-score, e["id"], e))
-        if e["kind"] == "weapon" and slots.get(name) not in owned:
+        if e["kind"] == "weapon" and not owns_pickup(name, p["carrying"]):
             weapons.append((length, e["id"], e))
         useful_ammo = (
             name in ("Clip", "ClipBox", "Chaingun")
             and any(w["slot"] in (2, 4) and w["ammo"] < 20 for w in p["carrying"])
         ) or (
             name in ("Shell", "ShellBox", "Shotgun", "SuperShotgun")
-            and any(w["slot"] in (3, 9) and w["ammo"] < 4 for w in p["carrying"])
+            and any(w["slot"] == 3 and w["ammo"] < 4 for w in p["carrying"])
         )
         if useful_ammo:
             ammunition.append((length, e["id"], e))
