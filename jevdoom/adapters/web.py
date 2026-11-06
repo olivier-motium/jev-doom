@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from jevdoom.core.protocol import MAX_ORDER_CHARS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -173,6 +174,8 @@ def create_app(h):
         if command == "orders":
             if not isinstance(args.get("text"), str):
                 raise HTTPException(400, "Order text is required")
+            if len(args["text"]) > MAX_ORDER_CHARS:
+                raise HTTPException(400, f"Order must be at most {MAX_ORDER_CHARS} characters")
         h.commands.put((command, args))
         return {"queued": command}
 

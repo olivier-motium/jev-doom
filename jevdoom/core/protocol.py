@@ -5,6 +5,8 @@ import math
 
 from .catalog import EVALUATOR_FIELDS
 
+MAX_ORDER_CHARS = 1500
+
 
 def state_for_model(observation, objective, exploration_target, tactic_outcomes, order, order_rev):
     """Actor context: what Jev, option generation and the motors may see. Evaluator counters are removed; outcome feedback carries statuses, not counter deltas."""

@@ -20,7 +20,7 @@ from jevdoom.adapters.files import FileStore
 from jevdoom.adapters.snapshot import SnapshotView
 from jevdoom.adapters.decider import AsyncDecider
 from jevdoom.ports import end_reason
-from jevdoom.core.protocol import state_for_model, validate_answers
+from jevdoom.core.protocol import MAX_ORDER_CHARS, state_for_model, validate_answers
 from jevdoom.core.perception import observe_entities
 from jevdoom.core.motor import calculate_motor
 from jevdoom.core.budget import blocks, reserve, settle
@@ -1264,7 +1264,11 @@ class Run:
                     self.capture()
                     self.status = "warming"
                 elif cmd == "orders":
-                    self.order = str(args["text"])[:1500]
+                    text = args.get("text")
+                    if not isinstance(text, str) or len(text) > MAX_ORDER_CHARS:
+                        self.error = f"Order must be text of at most {MAX_ORDER_CHARS} characters"
+                        continue
+                    self.order = text
                     self.order_rev += 1
                     self.end_tactic("invalidated")
                     self.last_action = None

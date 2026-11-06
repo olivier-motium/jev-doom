@@ -76,3 +76,14 @@ def test_local_boundary_and_request_limits():
     good = json.dumps({"controller": "local", "map": "MAP01"}).encode()
     assert request(app, "/api/start", body=good)[0] == 200
     assert h.commands.get()[0] == "start"
+
+
+def test_overlong_order_is_rejected_without_queueing():
+    h = SimpleNamespace(config={"provider_key": "gateway"}, commands=queue.Queue())
+    app = create_app(h)
+    too_long = json.dumps({"text": "x" * 1501}).encode()
+    assert request(app, "/api/orders", body=too_long)[0] == 400
+    assert h.commands.empty()
+    allowed = json.dumps({"text": "x" * 1500}).encode()
+    assert request(app, "/api/orders", body=allowed)[0] == 200
+    assert h.commands.get()[1]["text"] == "x" * 1500
