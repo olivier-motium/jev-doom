@@ -271,15 +271,12 @@ class Run:
         if skill != 3:
             parts.append("skill %d" % skill)
         if seed != 17:
-            parts.append("unused seed %d" % seed)
+            parts.append("seed %d" % seed)
         self.config["start_type"] = (
             "Fresh pistol start"
             if not parts
             else "Fresh pistol start on "
             + ", ".join(parts)
-            + " ("
-            + ("transfer check" if parts == ["unused seed %d" % seed] else "harder condition")
-            + ")"
         )
         self.config["start_type"] += ", observable mode"
         if timing == "pause_assisted":

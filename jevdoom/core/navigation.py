@@ -813,6 +813,7 @@ class Navigator:
     def ui(self):
         return dict(
             mode="observable",
+            cell_size=STEP,
             lines=[
                 dict(a=s["a"], b=s["b"], kind=s["kind"], blocking=not s["open"])
                 for s in self.observed_segments()

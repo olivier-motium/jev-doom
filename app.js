@@ -4,6 +4,8 @@ let selected = null;
 let editing = false;
 let disconnected = false;
 let selectedQuestion = null;
+let commandError = null;
+let pendingOrder = null;
 
 function text(id, value) { $(id).textContent = value ?? ''; }
 function node(tag, value, className) {
@@ -13,10 +15,18 @@ function node(tag, value, className) {
   return element;
 }
 async function command(name, args = {}) {
-  const response = await fetch('/api/' + name, {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(args)
-  });
-  if (!response.ok) text('error', await response.text());
+  commandError = null;
+  try {
+    const response = await fetch('/api/' + name, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(args)
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return true;
+  } catch (error) {
+    commandError = error.message || 'Command failed';
+    text('error', commandError);
+    return false;
+  }
 }
 $('start').onclick = () => {
   if (!state) return;
@@ -26,7 +36,13 @@ $('start').onclick = () => {
 $('probe').onclick = () => command('probe', {provider: $('provider').value});
 $('pause').onclick = () => { if (state) command(state.status === 'paused' ? 'resume' : 'pause'); };
 $('stop').onclick = () => command('stop');
-$('apply').onclick = () => { command('orders', {text: $('orders').value}); editing = false; };
+$('apply').onclick = async () => {
+  const value = $('orders').value;
+  if (await command('orders', {text: value})) {
+    pendingOrder = value;
+    if (state?.order === value && $('orders').value === value) { editing = false; pendingOrder = null; }
+  }
+};
 $('orders').oninput = () => { editing = true; };
 $('controller').onchange = $('provider').onchange = () => { if (state) render(state); };
 
@@ -130,8 +146,9 @@ function drawMap() {
   canvas.height = canvas.clientHeight * devicePixelRatio;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const lines = state?.map?.lines || [], cells = state?.map?.seen_cells || [];
+  const cellSize = state?.map?.cell_size ?? 24;
   const player = state?.observation?.player;
-  const points = [...lines.flatMap(line => [line.a, line.b]), ...cells.map(cell => [cell[0] * 24, cell[1] * 24])];
+  const points = [...lines.flatMap(line => [line.a, line.b]), ...cells.map(cell => [cell[0] * cellSize, cell[1] * cellSize])];
   if (player) points.push([player.x, player.y]);
   if (!points.length) return;
   const minx = Math.min(...points.map(point => point[0])), maxx = Math.max(...points.map(point => point[0]));
@@ -139,7 +156,7 @@ function drawMap() {
   const scale = Math.min(canvas.width / (maxx - minx + 180), canvas.height / (maxy - miny + 180));
   const xy = point => [canvas.width / 2 + (point[0] - (minx + maxx) / 2) * scale, canvas.height / 2 - (point[1] - (miny + maxy) / 2) * scale];
   ctx.fillStyle = '#273b42';
-  for (const cell of cells) { const [x, y] = xy([cell[0] * 24, cell[1] * 24]); const size = Math.max(1, 24 * scale); ctx.fillRect(x - size / 2, y - size / 2, size, size); }
+  for (const cell of cells) { const [x, y] = xy([cell[0] * cellSize, cell[1] * cellSize]); const size = Math.max(1, cellSize * scale); ctx.fillRect(x - size / 2, y - size / 2, size, size); }
   ctx.lineWidth = Math.max(1.5 * devicePixelRatio, 2);
   for (const line of lines) {
     ctx.strokeStyle = line.blocking ? '#a8c1c8' : '#6d8b90'; ctx.beginPath();
@@ -169,11 +186,15 @@ function render(next) {
   $('pause').textContent = state.status === 'paused' ? 'Resume' : 'Pause';
   $('stop').disabled = replay || !busy;
   $('apply').disabled = replay || !state.observation;
-  text('status', state.status); text('error', state.error || '');
+  text('status', state.status); text('error', commandError || state.error || '');
   text('selector', config.controller === 'local' ? 'Local rule, no model' : config.controller === 'replay' ? 'Replay' : 'Jev');
   text('setup', replay ? `Recorded run: ${state.result?.reason || 'playing'}; no model or provider call.` : controller === 'local' ? 'Local rule uses no key and makes no model call.' : 'Check the selected provider before starting. Checking makes one billed call.');
   $('stats').replaceChildren(stat('Health', player.health ?? '—'), stat('Armor', player.armor ?? '—'), stat('Ammo', player.ammo ?? '—'), stat('Game seconds', progress.game_seconds ?? '—'));
   text('objective', state.objective?.subject?.label || state.objective?.goal || 'Waiting for a decision.');
+  if (pendingOrder !== null && state.order === pendingOrder) {
+    if ($('orders').value === pendingOrder) editing = false;
+    pendingOrder = null;
+  }
   if (!editing && document.activeElement !== $('orders')) $('orders').value = state.order || '';
   text('budget', `Charged or reserved: $${Number(state.budget?.charged_usd || 0).toFixed(4)} / $${Number(config.budget_usd || 0).toFixed(2)} cap`);
   text('latency', `Last decision: ${state.latency?.last_ms == null ? '—' : state.latency.last_ms.toFixed(0) + ' ms'} · ${state.busy ? 'request in flight' : 'no request in flight'}`);
