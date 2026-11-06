@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not billed' -rs"
+markers = [
+    "engine: starts the ViZDoom engine; slow, run one test file at a time",
+    "billed: makes a real provider call; never run without the owner's approval",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# The classic default set, written out so a new ruff release does not change it.
+select = ["E4", "E7", "E9", "F"]
