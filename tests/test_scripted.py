@@ -37,6 +37,17 @@ def test_provider_stall_discards_late_reply_and_requests_fresh_state(play):
     assert any(event["id"] > discarded[0]["id"] for event in events(run, "request"))
 
 
+def test_slow_first_reply_starts_play_without_warming_retry(play):
+    run = play(Case("slow_first_reply", delay=80, ticks=100))
+    first_response = next(i for i, event in enumerate(run.events) if event["type"] == "response")
+    earlier_requests = [
+        event for event in run.events[:first_response] if event["type"] == "request"
+    ]
+    assert len(earlier_requests) == 1
+    assert run.events[first_response]["record"]["accepted"]
+    assert run.harness.started_play and run.harness.sim_ticks >= 100
+
+
 def test_order_change_while_a_call_is_pending(play):
     require_hash_seed()
     run = play(Case("map01_order_change", delay=20, order_at=200, ticks=500))

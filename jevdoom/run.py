@@ -115,6 +115,7 @@ class Run:
         self.busy = False
         self.pending_billed = False
         self.pending_since = None
+        self.pending_request_id = None
         self.pending_stalled = False
         self.episode = 0
         self.seq = 0
@@ -717,6 +718,7 @@ class Run:
         self.busy = True
         self.pending_billed = self.config["controller"] != "local"
         self.pending_since = now
+        self.pending_request_id = job["id"]
         self.pending_stalled = False
         if (
             self.started_play
@@ -792,6 +794,7 @@ class Run:
         self.pending_billed = False
         stalled = self.pending_stalled
         self.pending_since = None
+        self.pending_request_id = None
         self.pending_stalled = False
         if self.status == "running" and self.pause_started is not None:
             self.paused_seconds += self.clock() - self.pause_started
@@ -1272,13 +1275,21 @@ class Run:
                 self.busy
                 and self.pending_since is not None
                 and not self.pending_stalled
+                and self.started_play
                 and self.status in ("running", "warming")
+                # The pre-rework loop used an approximately two-second stall threshold, not a provider SLA.
                 and self.clock() - self.pending_since >= 2
             ):
                 self.pending_stalled = True
                 self.stall_total += 1
                 self.status = "waiting_provider"
-                self.log("provider_stall", game_tick=self.observation.get("tick"), seconds=2)
+                self.log(
+                    "provider_stall",
+                    request=self.pending_request_id,
+                    game_tick=self.observation.get("tick"),
+                    seconds=2,
+                    release="on reply: discard a stale success or enter provider error recovery",
+                )
             while reply := self.decider.poll():
                 job, response = reply
                 self.log(
