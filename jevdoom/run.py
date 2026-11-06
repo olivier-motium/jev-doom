@@ -667,16 +667,17 @@ class Run:
         if self.busy or self.status not in ("warming", "running"):
             return
         now = self.clock()
-        if now - self.last_dispatch < 0.12:
-            return
-        enemies = {e["id"] for e in self.observation.get("enemies", [])}
         projectile = closing_projectile(self.observation)
         projectile_id = projectile.get("id") if projectile else None
+        new_projectile = projectile_id and projectile_id not in self.decision_projectiles
+        if now - self.last_dispatch < 0.12 and not new_projectile:
+            return
+        enemies = {e["id"] for e in self.observation.get("enemies", [])}
         if self.last_action and not (
             enemies - self.decision_enemies
             or self.decision_health - self.observation["player"]["health"] >= 10
             or self.sim_ticks - self.decision_tick >= 105
-            or (projectile_id and projectile_id not in self.decision_projectiles)
+            or new_projectile
             or (self.active_tactic and not self.active_tactic.get("prefetch_requested"))
         ):
             return
