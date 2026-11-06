@@ -124,10 +124,10 @@ def test_stationary_combat_does_not_close_door_but_blocked_push_does():
         "through": [72, 32],
     }
     action = {
-        "face": "hold",
+        "face": "imp",
         "move": "hold",
         "dodge": "carry_on",
-        "trigger": "hold_fire",
+        "trigger": "fire",
         "weapon": "keep",
         "use": "no_use",
         "snapshot": {"objective": {"subject": target}},
@@ -136,10 +136,11 @@ def test_stationary_combat_does_not_close_door_but_blocked_push_does():
     }
     player = {"x": -10, "y": 32, "facing": 0, "weapon": "pistol"}
     observation = {
-        "enemies": [],
+        "enemies": [{"id": "imp", "x": 50, "y": 32}],
         "previous_controls": {"MOVE": {"destination": target, "forward": 20, "right": 0}},
     }
     held = calculate_motor(action, observation, player, nav, {}, 50, 0, 0, {}, {}, 0)
+    assert held.controls["TRIGGER"]
     assert held.nav.point_is_open(held.nav.observed_lines["door"], (0, 32))
     action["move"] = "destination"
     pushed = calculate_motor(action, observation, player, nav, {}, 50, 0, 0, {}, {}, 0)
