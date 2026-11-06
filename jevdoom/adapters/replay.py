@@ -14,7 +14,7 @@ from jevdoom.adapters.vizdoom_engine import VizdoomEngine
 
 
 class ReplaySession:
-    def __init__(self, run_dir):
+    def __init__(self, run_dir, frame_interval=1 / 35):
         self.run_dir = Path(run_dir).resolve()
         recording = self.run_dir / "episode.lmp"
         trace = self.run_dir / "trace.jsonl"
@@ -38,6 +38,7 @@ class ReplaySession:
         self.view_port = SnapshotView()
         self.engine = VizdoomEngine(Path(__file__).resolve().parents[2] / "assets/freedoom2.wad")
         self.recording = recording
+        self.frame_interval = frame_interval
         self.error = None
         self.stopped = False
         self.start_lock = threading.Lock()
@@ -108,7 +109,7 @@ class ReplaySession:
                 frame = self.engine.frame()
                 if frame is None and not self.stop_event.is_set():
                     raise RuntimeError("Replay ended without a terminal step")
-                self.stop_event.wait(1 / 35)
+                self.stop_event.wait(self.frame_interval)
             self.stopped = self.stop_event.is_set()
             self._publish(
                 frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown

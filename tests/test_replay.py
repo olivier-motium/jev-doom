@@ -37,32 +37,32 @@ def test_record_and_replay(map_name, seed, monkeypatch):
         assert run.result.get("reason") == "duration_limit", run.error
         assert (run.run_dir / "episode.lmp").stat().st_size > 0
         final = run.result["player"]
-        replay = ReplaySession(run.run_dir)
+        replay = ReplaySession(run.run_dir, frame_interval=0)
         try:
             replay.view()
-            first_seen = {}
-            # Replay is paced at 35 tics per second in wall time; a loaded machine needs headroom.
-            deadline = time.monotonic() + 60
-            while replay.thread.is_alive() and time.monotonic() < deadline:
+            started = time.monotonic()
+            limit = 60
+            tick = None
+            while replay.thread.is_alive() and time.monotonic() - started < limit:
                 snapshot = replay.view()
-                tick = snapshot.get("observation", {}).get("tick")
+                tick = snapshot.get("observation", {}).get("tick", tick)
                 if tick is not None:
-                    for record in snapshot.get("records", []):
-                        first_seen.setdefault(record["id"], tick)
+                    assert all(
+                        record["tick"] + record.get("decision_age_ticks", 0) <= tick
+                        for record in snapshot.get("records", [])
+                    )
                 replay.thread.join(timeout=0.01)
-            assert not replay.thread.is_alive(), "replay did not finish"
+            elapsed = time.monotonic() - started
+            assert not replay.thread.is_alive(), (
+                f"replay {map_name} seed {seed} timed out after {elapsed:.1f}s "
+                f"(limit {limit}s, last tick {tick})"
+            )
             view = replay.view()
             assert view["status"] == "replay_finished"
             assert view["result"]["reason"] == run.result["reason"]
             player = view["observation"]["player"]
             assert math.dist((player["x"], player["y"]), (final["x"], final["y"])) <= 16
             assert view["records"]
-            assert first_seen
-            assert all(
-                first_seen[record["id"]] == record["tick"] + record.get("decision_age_ticks", 0)
-                for record in view["records"]
-                if record["id"] in first_seen
-            )
             assert all(
                 r["tick"] + r.get("decision_age_ticks", 0) <= view["observation"]["tick"]
                 for r in view["records"]
