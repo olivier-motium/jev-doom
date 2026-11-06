@@ -59,7 +59,7 @@ class Case:
     map: str = "MAP01"
     seed: int = 17
     skill: int = 3
-    ticks: int = 1040  # stop before the first periodic checkpoint (harness.py:795)
+    ticks: int = 1040
     seconds: float = 90
     delay: int = 1  # engine ticks from request to reply; 1 means the next tick
     controller: str = "semantic_tactics"
@@ -421,12 +421,12 @@ def reply_variants(questions):
 
 def validation_outcomes(questions):
     """validate_answers on each reply variant: its validation record or its error text."""
-    from jevdoom.run import Run
+    from jevdoom.core.protocol import validate_answers
 
     out = {}
     for name, reply in reply_variants(questions):
         try:
-            Run.validate_answers(None, dict(questions=questions), reply)
+            validate_answers(dict(questions=questions), reply)
             out[name] = dict(validation=reply["validation"])
         except ValueError as error:
             out[name] = dict(error=str(error))

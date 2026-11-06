@@ -63,7 +63,6 @@ class Navigator:
         self._union_prep = prep(self._observed_union)
         self._blocked_prep = prep(self._observed_blocked)
         self.obs_cells = {}
-        self._cell_sector_cache = {}
         self.lines = read_wad(wad_bytes, mapname)
         # Sector polygons answer which sector a seen floor point lies in; nothing else of the static map is used.
         grouped = defaultdict(list)
@@ -119,14 +118,7 @@ class Navigator:
     @staticmethod
     def face_texture_kind(line, p):
         """Classification from the texture of the face the player sees: the front face when the player stands on the right of the line, else the back face."""
-        ax, ay = line["a"]
-        bx, by = line["b"]
-        cross = (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)
-        names = [
-            n
-            for n in (line.get("ftex", []) if cross <= 0 else line.get("btex", []))
-            if n and n != "-"
-        ]
+        names = Navigator.face_textures(line, p)
         if any(n.startswith(("SW1", "SW2")) for n in names):
             return "switch"
         if any("EXIT" in n for n in names):
@@ -220,9 +212,6 @@ class Navigator:
                             b=line["b"],
                             kind=self.face_texture_kind(line, p),
                             texture=self.face_textures(line, p),
-                            seen_tick=tick,
-                            uses=0,
-                            effects=[],
                             spans=[],
                         )
                     self.frame_hits.add(line["id"])

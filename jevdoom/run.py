@@ -584,9 +584,6 @@ class Run:
             self.order_rev,
         )
 
-    def validate_answers(self, job, reply):
-        return validate_answers(job, reply)
-
     def end_tactic(self, reason):
         active = self.active_tactic
         if not active:
@@ -814,7 +811,7 @@ class Run:
         )
         if job["phase"] == "probe":
             try:
-                self.validate_answers(job, r)
+                validate_answers(job, r)
                 record["accepted"] = True
                 self.provider_health[provider] = True
             except Exception as e:
@@ -832,7 +829,7 @@ class Run:
         validation_error = None
         if r.get("ok"):
             try:
-                self.validate_answers(job, r)
+                validate_answers(job, r)
             except Exception as e:
                 validation_error = str(e)
         elif r.get("error_name") == "AI_InvalidResponseDataError":
@@ -915,7 +912,6 @@ class Run:
             self.decision_tick = self.sim_ticks - 105
         else:
             try:
-                self.validate_answers(job, r)
                 answers = r["answers"]
                 picks = {k: a["choice"] for k, a in answers.items()}
                 selected = picks["tactic"]
