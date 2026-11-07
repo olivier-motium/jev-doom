@@ -165,30 +165,61 @@ class Run:
 
     def result_budget(self):
         budget = copy.deepcopy(self.ledger)
-        budget.pop("open_result", None)
+        budget.pop("open_results", None)
         return budget
 
     def recover_result(self):
-        note = self.ledger.get("open_result")
-        if not note:
+        notes = self.ledger.get("open_results")
+        if notes is None:
             return
-        if note["settled"]:
+        changed = False
+        if not isinstance(notes, dict):
+            logging.getLogger(__name__).warning("Invalid open results in budget")
+            del self.ledger["open_results"]
+            changed = True
+            notes = {}
+        for run_name, note in list(notes.items()):
             try:
-                result = self.store.read_result(note["run_name"])
-                if not isinstance(result, dict) or result.get("episode") != note["episode"]:
-                    raise ValueError("Open result episode does not match the ledger")
-            except (OSError, ValueError) as error:
-                logging.getLogger(__name__).warning(
-                    "Could not recover result for run %s: %s", note["run_name"], error
-                )
-            else:
+                if not note["settled"]:
+                    del notes[run_name]
+                    changed = True
+                    continue
+                try:
+                    result = self.store.read_result(run_name)
+                except FileNotFoundError as error:
+                    raise ValueError(f"Result file missing: {error}") from error
+                if (
+                    not isinstance(result, dict)
+                    or result.get("episode") != note["episode"]
+                    or not isinstance(result["config"], dict)
+                ):
+                    raise ValueError("Open result does not match the ledger")
                 result["budget"] = self.result_budget()
                 result["cost_final"] = True
                 result["pending_reservation_usd"] = 0
                 result.update(self.episode_costs(note["run_budget_start"], result["config"]))
-                self.store.write_result(result, note["run_name"])
-        del self.ledger["open_result"]
-        self.save_budget()
+                self.store.write_result(result, run_name)
+            except (KeyError, TypeError, ValueError, AttributeError) as error:
+                logging.getLogger(__name__).warning(
+                    "Could not recover result for run %s: %s", run_name, error
+                )
+                del notes[run_name]
+                changed = True
+                continue
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "Could not recover result for run %s: %s", run_name, error
+                )
+                continue
+            del notes[run_name]
+            changed = True
+        if changed:
+            if not notes:
+                self.ledger.pop("open_results", None)
+            try:
+                self.save_budget()
+            except Exception as error:
+                logging.getLogger(__name__).warning("Could not save recovered budget: %s", error)
 
     def clear_objective(self, reason, detail=None):
         if reason == "invalidated":
@@ -836,9 +867,10 @@ class Run:
             self.paused_seconds += self.clock() - self.pause_started
             self.pause_started = None
         provider = job.get("provider", "gateway")
+        run_name = Path(self.run_dir).name if hasattr(self, "run_dir") else None
         if job.get("controller") != "local":
             settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
-            note = self.ledger.get("open_result")
+            note = self.ledger.get("open_results", {}).get(run_name)
             if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
                 note["settled"] = True
             self.save_budget()
@@ -1067,9 +1099,12 @@ class Run:
             self.result["pending_reservation_usd"] = 0
             self.result.update(self.episode_costs())
             self.store.write_result(self.result)
-            note = self.ledger.get("open_result")
+            notes = self.ledger.get("open_results", {})
+            note = notes.get(run_name)
             if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
-                del self.ledger["open_result"]
+                del notes[run_name]
+                if not notes:
+                    del self.ledger["open_results"]
                 self.save_budget()
 
     def start_local_fallback(self):
@@ -1227,7 +1262,7 @@ class Run:
             else "Pause-assisted (labelled): simulation paused on provider/control-lease stalls and during bounded backoff"
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
-        self.result["cost_final"] = not self.busy
+        self.result["cost_final"] = not (self.pending and self.pending.billed)
         self.result["pending_reservation_usd"] = (
             RESERVE if self.pending and self.pending.billed else 0
         )
@@ -1271,8 +1306,7 @@ class Run:
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
             if self.pending and self.pending.billed:
-                self.ledger["open_result"] = dict(
-                    run_name=Path(self.run_dir).name,
+                self.ledger.setdefault("open_results", {})[Path(self.run_dir).name] = dict(
                     episode=self.episode,
                     request_id=self.pending.request_id,
                     run_budget_start=self.run_budget_start,
@@ -1456,9 +1490,28 @@ class Run:
     def shutdown(self):
         self.stop_event.set()
         self.engine_thread.join(timeout=3)
+        still_live = self.status in LIVE
+        pending_after_join = self.pending
         self.decider.close()
+
+        def unsettled(reason, pending):
+            logging.getLogger(__name__).warning("Provider unsettled after shutdown: %s", reason)
+            self.log(
+                "provider_unsettled_after_shutdown",
+                request=pending.request_id if pending else None,
+                reason=reason,
+                reserved_usd=RESERVE if pending and pending.billed else 0,
+            )
+
+        if still_live:
+            unsettled("run still live after engine join", pending_after_join)
+            return
+        # Match AsyncDecider.close's 2 s worker join bound to keep shutdown bounded.
         if self.lock.acquire(timeout=2):
             try:
+                if self.status in LIVE:
+                    unsettled("run still live after engine join", self.pending)
+                    return
                 while self.busy and (reply := self.decider.poll()):
                     job, response = reply
                     self.log(
@@ -1470,6 +1523,8 @@ class Run:
                     self.accept_reply(job, response)
             finally:
                 self.lock.release()
+        else:
+            unsettled("lock not acquired within 2 s", self.pending)
 
     def _build_view(self):
         with self.lock:

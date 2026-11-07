@@ -239,8 +239,6 @@ class MemoryStore:
         self.result = None
         self.started = False
         self.ledger = None
-        self.run_name = None
-        self.results = {}
 
     def load_ledger(self):
         return copy.deepcopy(self.ledger)
@@ -251,7 +249,6 @@ class MemoryStore:
     def open_run(self, name):
         self.started = True
         self.events = []
-        self.run_name = name
         return Path("memory") / name
 
     def append_trace(self, event):
@@ -264,14 +261,8 @@ class MemoryStore:
     def append_probe(self, record):
         pass
 
-    def read_result(self, run_name):
-        return copy.deepcopy(self.results[run_name])
-
-    def write_result(self, result, run_name=None):
-        name = run_name or self.run_name
-        self.results[name] = normal(result)
-        if name == self.run_name:
-            self.result = copy.deepcopy(self.results[name])
+    def write_result(self, result):
+        self.result = normal(result)
 
 
 @pytest.fixture
