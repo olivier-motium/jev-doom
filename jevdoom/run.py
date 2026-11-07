@@ -26,6 +26,8 @@ from jevdoom.core.perception import observe_entities
 from jevdoom.core.motor import calculate_motor
 from jevdoom.core.budget import blocks, reserve, settle
 from jevdoom.core.geometry import dist
+from jevdoom.core.lifecycle import ACCEPTS_REPLY, CAN_PAUSE, DISPATCHES, LIVE, transition
+from jevdoom.core.pending import clear, mark_stalled, submit
 from jevdoom.core.catalog import (
     BUTTONS,
     EVALUATOR_FIELDS,
@@ -63,7 +65,7 @@ class Run:
         self.view_port = view or SnapshotView()
         self.commands = queue.Queue()
         self.lock = threading.RLock()
-        self.status = "booting"
+        self._status = "booting"
         self.error = None
         self.order = "Survive and advance through the level. Defeat visible threats, collect useful resources, explore unvisited routes, open doors and reach the exit."
         self.order_rev = 0
@@ -113,11 +115,7 @@ class Run:
         self.latencies = deque(maxlen=300)
         self.frame_image = None
         self.map = {}
-        self.busy = False
-        self.pending_billed = False
-        self.pending_since = None
-        self.pending_request_id = None
-        self.pending_stalled = False
+        self.pending = None
         self.episode = 0
         self.seq = 0
         self.objective = None
@@ -144,6 +142,17 @@ class Run:
         self.engine_thread = threading.Thread(target=self.engine_loop, daemon=True)
         self.engine_thread.start()
 
+    @property
+    def status(self):
+        return self._status
+
+    def _move(self, target, why):
+        self._status = transition(self.status, target, why)
+
+    @property
+    def busy(self):
+        return self.pending is not None
+
     def log(self, type, **data):
         event = dict(type=type, at=utc(), episode=self.episode)
         event.update(data)
@@ -153,16 +162,48 @@ class Run:
     def save_budget(self):
         self.store.save_ledger(self.ledger)
 
-    def invalidate_objective(self, reason):
-        self.end_tactic("invalidated")
-        self.log(
-            "objective_invalidated",
-            objective=self.objective,
-            reason=reason,
-            game_tick=self.sim_ticks,
-        )
-        self.objective = None
-        self.control_rev += 1
+    def clear_objective(self, reason, detail=None):
+        if reason == "invalidated":
+            self.end_tactic("invalidated")
+            self.log(
+                "objective_invalidated",
+                objective=self.objective,
+                reason=detail,
+                game_tick=self.sim_ticks,
+            )
+            self.objective = None
+            self.control_rev += 1
+        elif reason == "new_game":
+            self.objective = None
+            self.last_action = None
+            self.controls = {}
+        elif reason == "weapon_complete":
+            self.log(
+                "objective_complete",
+                goal="upgrade_weapon",
+                subject=self.objective.get("subject") or {},
+                reason=detail,
+            )
+            self.objective = None
+            self.last_action = None
+            self.control_rev += 1
+            self.controls = {
+                "released": True,
+                "reason": "Weapon objective finished or invalid; request fresh goal",
+            }
+        elif reason == "tactic_end":
+            self.end_tactic(detail)
+            self.last_action = None
+            if detail != "completed":
+                self.control_rev += 1
+            self.objective = None
+        elif reason == "orders":
+            self.end_tactic("invalidated")
+            self.last_action = None
+            self.objective = None
+            self.control_rev += 1
+        else:
+            raise ValueError(f"Unknown objective clear reason: {reason!r}")
 
     def new_game(self):
         self.engine.start(
@@ -175,9 +216,7 @@ class Run:
         self.position_history = deque(maxlen=35)
         self.last_failed_tick = -1000
         self.navigation_feedback = None
-        self.objective = None
-        self.last_action = None
-        self.controls = {}
+        self.clear_objective("new_game")
         self.seq = 0
         self.sim_ticks = 0
         self.start_wall = self.clock()
@@ -215,7 +254,7 @@ class Run:
         self.exploration_target = None
         self.control_rev = 0
         self.capture()
-        self.status = "ready"
+        self._move("ready", "game initialized")
 
     def begin_run(self, args):
         selected_map = str(args.get("map", self.config["map"])).upper()
@@ -298,7 +337,7 @@ class Run:
         )
         self.records.clear()
         self.result = {}
-        self.status = "warming"
+        self._move("warming", "run started")
         self.error = None
 
     def capture(self):
@@ -341,21 +380,10 @@ class Run:
             subject = self.objective.get("subject") or {}
             carried = owns_pickup(subject.get("id", "").rsplit("_", 1)[0], p["carrying"])
             if carried or subject.get("id") not in self.memory:
-                self.log(
-                    "objective_complete",
-                    goal="upgrade_weapon",
-                    subject=subject,
-                    reason="Weapon now carried"
-                    if carried
-                    else "Target no longer in observed memory",
+                self.clear_objective(
+                    "weapon_complete",
+                    "Weapon now carried" if carried else "Target no longer in observed memory",
                 )
-                self.objective = None
-                self.last_action = None
-                self.control_rev += 1
-                self.controls = {
-                    "released": True,
-                    "reason": "Weapon objective finished or invalid; request fresh goal",
-                }
         p["velocity"] = [round(var("VELOCITY_X") * 35, 1), round(var("VELOCITY_Y") * 35, 1)]
         pos = [p["x"], p["y"]]
         self.position_history.append(pos)
@@ -371,8 +399,9 @@ class Run:
             subject.get("kind") in ("health", "ammo", "weapon", "armor", "key")
             and subject.get("id") not in self.memory
         ):
-            self.invalidate_objective(
-                "Pickup no longer observed after nearby approach; replan without inferring collection"
+            self.clear_objective(
+                "invalidated",
+                "Pickup no longer observed after nearby approach; replan without inferring collection",
             )
         entities.sort(key=lambda e: (not e["visible"], e["distance"]))
         obstacles = [e for e in entities if e["kind"] == "obstacle"]
@@ -565,11 +594,7 @@ class Run:
                     if stuck
                     else "unavailable"
                 )
-                self.end_tactic(reason)
-                self.last_action = None
-                if reason != "completed":
-                    self.control_rev += 1
-                self.objective = None
+                self.clear_objective("tactic_end", reason)
         self.observation["survival"] = dict(
             stationary_seconds=round((self.sim_ticks - self.stationary_since) / 35, 2),
             escape_guard="At health30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
@@ -619,13 +644,7 @@ class Run:
         self.save_budget()
 
     def request_probe(self, args):
-        if self.busy or self.status in (
-            "running",
-            "warming",
-            "waiting_provider",
-            "recovering",
-            "paused",
-        ):
+        if self.busy or self.status in LIVE:
             return
         provider = args.get("provider", "gateway")
         state = args["state"]
@@ -662,11 +681,10 @@ class Run:
             ).hexdigest(),
         )
         self.decider.submit(job)
-        self.busy = True
-        self.pending_billed = True
+        self.pending = submit(self.pending, None, None, True)
 
     def dispatch(self):
-        if self.busy or self.status not in ("warming", "running"):
+        if self.busy or self.status not in DISPATCHES:
             return
         now = self.clock()
         projectile_ids = {p["id"] for p in closing_projectiles(self.observation) if p.get("id")}
@@ -715,11 +733,7 @@ class Run:
         )
         self.log("request", **{k: v for k, v in job.items() if not k.endswith("_mono")})
         self.decider.submit(job)
-        self.busy = True
-        self.pending_billed = self.config["controller"] != "local"
-        self.pending_since = now
-        self.pending_request_id = job["id"]
-        self.pending_stalled = False
+        self.pending = submit(self.pending, job["id"], now, self.config["controller"] != "local")
         if (
             self.started_play
             and self.config.get("timing") == "pause_assisted"
@@ -789,12 +803,7 @@ class Run:
         self.log("tactic_start", **self.active_tactic)
 
     def accept_reply(self, job, r):
-        self.busy = False
-        self.pending_billed = False
-        stalled = self.pending_stalled
-        self.pending_since = None
-        self.pending_request_id = None
-        self.pending_stalled = False
+        self.pending, stalled = clear(self.pending)
         if self.status == "running" and self.pause_started is not None:
             self.paused_seconds += self.clock() - self.pause_started
             self.pause_started = None
@@ -844,11 +853,7 @@ class Run:
             validation_error = r.get("error", "Invalid provider answer")
         if validation_error:
             record["validation_error"] = validation_error
-        if job["episode"] != self.episode or self.status not in (
-            "warming",
-            "running",
-            "waiting_provider",
-        ):
+        if job["episode"] != self.episode or self.status not in ACCEPTS_REPLY:
             record["override_reasons"].append("Episode/order/state changed while request in flight")
         elif not r.get("ok") or validation_error:
             transient = (
@@ -860,7 +865,7 @@ class Run:
             if transient:
                 self.recovery_attempts += 1
                 self.recovery_total += 1
-                self.status = "recovering"
+                self._move("recovering", "provider failure")
                 self.end_tactic("invalidated")
                 self.last_action = None
                 if (
@@ -905,7 +910,7 @@ class Run:
                 )
         elif stalled:
             self.capture()
-            self.status = "warming"
+            self._move("warming", "stalled reply discarded")
             self.decision_tick = self.sim_ticks - 105
             record["override_reasons"].append(
                 "Provider stall: late answer discarded; fresh snapshot required"
@@ -996,7 +1001,7 @@ class Run:
                 self.end_tactic("replaced")
                 self.start_option(job, picks, selected, self.config["controller"])
                 if self.status == "warming":
-                    self.status = "running"
+                    self._move("running", "decision accepted")
                     self.error = None
                     if not self.started_play:
                         self.start_wall = self.clock()
@@ -1136,7 +1141,7 @@ class Run:
         )
 
     def finish(self, reason):
-        if self.status not in ("running", "warming", "paused", "recovering", "waiting_provider"):
+        if self.status not in LIVE:
             return
         if reason == "dead" and self.observation.get("player"):
             for key, var in [
@@ -1147,7 +1152,7 @@ class Run:
             ]:
                 self.observation["player"][key] = int(self.engine.variable(var))
         self.end_tactic(reason)
-        self.status = reason
+        self._move(reason, "run finished")
         self.controls = dict(released=True, reason=reason)
         self.last_action = None
         self.result = dict(
@@ -1184,7 +1189,9 @@ class Run:
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
         self.result["cost_final"] = not self.busy
-        self.result["pending_reservation_usd"] = RESERVE if self.busy and self.pending_billed else 0
+        self.result["pending_reservation_usd"] = (
+            RESERVE if self.pending and self.pending.billed else 0
+        )
         self.result["controller_metrics"] = dict(
             controller=self.config.get("controller", "semantic_tactics"),
             failed_route_seconds=round(self.failed_route_ticks / 35, 3),
@@ -1233,26 +1240,15 @@ class Run:
             while not self.commands.empty():
                 cmd, args = self.commands.get()
                 if cmd == "start":
-                    if self.busy or self.status in (
-                        "running",
-                        "warming",
-                        "paused",
-                        "recovering",
-                        "waiting_provider",
-                    ):
+                    if self.busy or self.status in LIVE:
                         continue
                     self.begin_run(args)
                 elif cmd == "probe":
                     self.request_probe(args)
                 elif cmd == "stop":
                     self.finish("stopped")
-                elif cmd == "pause" and self.status in (
-                    "running",
-                    "warming",
-                    "recovering",
-                    "waiting_provider",
-                ):
-                    self.status = "paused"
+                elif cmd == "pause" and self.status in CAN_PAUSE:
+                    self._move("paused", "operator pause")
                     self.control_rev += 1
                     if self.pause_started is None:
                         self.pause_started = self.clock()
@@ -1261,7 +1257,7 @@ class Run:
                     self.controls = {"released": True, "reason": "paused"}
                 elif cmd == "resume" and self.status == "paused":
                     self.capture()
-                    self.status = "warming"
+                    self._move("warming", "operator resume")
                 elif cmd == "orders":
                     text = args.get("text")
                     if not isinstance(text, str) or len(text) > MAX_ORDER_CHARS:
@@ -1274,27 +1270,24 @@ class Run:
                         continue
                     self.order = text
                     self.order_rev += 1
-                    self.end_tactic("invalidated")
-                    self.last_action = None
-                    self.objective = None
-                    self.control_rev += 1
+                    self.clear_objective("orders")
                     self.log("orders", text=self.order, revision=self.order_rev)
             if (
-                self.busy
-                and self.pending_since is not None
-                and not self.pending_stalled
+                self.pending is not None
+                and self.pending.since is not None
+                and not self.pending.stalled
                 and self.started_play
                 and self.config.get("timing", "real_time") == "real_time"
-                and self.status in ("running", "warming")
+                and self.status in DISPATCHES
                 # pre-rework:harness.py:777 used 2 s as the real-time control lease, not a provider SLA.
-                and self.clock() - self.pending_since >= 2
+                and self.clock() - self.pending.since >= 2
             ):
-                self.pending_stalled = True
+                self.pending = mark_stalled(self.pending)
                 self.stall_total += 1
-                self.status = "waiting_provider"
+                self._move("waiting_provider", "provider stalled")
                 self.log(
                     "provider_stall",
-                    request=self.pending_request_id,
+                    request=self.pending.request_id,
                     game_tick=self.observation.get("tick"),
                     seconds=2,
                     release="on reply: discard a stale success or enter provider error recovery",
@@ -1310,7 +1303,7 @@ class Run:
                 self.accept_reply(job, response)
             if self.status == "recovering" and self.clock() >= self.retry_at:
                 self.capture()
-                self.status = "warming"
+                self._move("warming", "recovery retry")
                 self.log(
                     "recovery_request",
                     attempt=self.recovery_attempts,
@@ -1386,7 +1379,7 @@ class Run:
                 self.finish("engine_error")
             except Exception:
                 pass
-            self.status = "engine_error"
+            self._move("engine_error", "engine loop failed")
             # A game failure must not strand billing or discard a paid response.
             if self.busy:
                 try:
@@ -1396,12 +1389,12 @@ class Run:
                     else:
                         self.log(
                             "provider_unsettled_after_engine_error",
-                            reserved_usd=RESERVE if self.pending_billed else 0,
+                            reserved_usd=RESERVE if self.pending and self.pending.billed else 0,
                         )
                 except Exception:
                     self.log(
                         "provider_unsettled_after_engine_error",
-                        reserved_usd=RESERVE if self.pending_billed else 0,
+                        reserved_usd=RESERVE if self.pending and self.pending.billed else 0,
                     )
         finally:
             try:
