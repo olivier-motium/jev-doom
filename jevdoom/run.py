@@ -27,6 +27,7 @@ from jevdoom.core.motor import calculate_motor
 from jevdoom.core.budget import blocks, reserve, settle
 from jevdoom.core.geometry import dist
 from jevdoom.core.lifecycle import ACCEPTS_REPLY, CAN_PAUSE, DISPATCHES, LIVE, transition
+from jevdoom.core.pending import clear, mark_stalled, submit
 from jevdoom.core.catalog import (
     BUTTONS,
     EVALUATOR_FIELDS,
@@ -114,11 +115,7 @@ class Run:
         self.latencies = deque(maxlen=300)
         self.frame_image = None
         self.map = {}
-        self.busy = False
-        self.pending_billed = False
-        self.pending_since = None
-        self.pending_request_id = None
-        self.pending_stalled = False
+        self.pending = None
         self.episode = 0
         self.seq = 0
         self.objective = None
@@ -151,6 +148,10 @@ class Run:
 
     def _move(self, target, why):
         self._status = transition(self.status, target, why)
+
+    @property
+    def busy(self):
+        return self.pending is not None
 
     def log(self, type, **data):
         event = dict(type=type, at=utc(), episode=self.episode)
@@ -664,8 +665,7 @@ class Run:
             ).hexdigest(),
         )
         self.decider.submit(job)
-        self.busy = True
-        self.pending_billed = True
+        self.pending = submit(self.pending, "probe", None, None, True)
 
     def dispatch(self):
         if self.busy or self.status not in DISPATCHES:
@@ -717,11 +717,9 @@ class Run:
         )
         self.log("request", **{k: v for k, v in job.items() if not k.endswith("_mono")})
         self.decider.submit(job)
-        self.busy = True
-        self.pending_billed = self.config["controller"] != "local"
-        self.pending_since = now
-        self.pending_request_id = job["id"]
-        self.pending_stalled = False
+        self.pending = submit(
+            self.pending, "decision", job["id"], now, self.config["controller"] != "local"
+        )
         if (
             self.started_play
             and self.config.get("timing") == "pause_assisted"
@@ -791,12 +789,7 @@ class Run:
         self.log("tactic_start", **self.active_tactic)
 
     def accept_reply(self, job, r):
-        self.busy = False
-        self.pending_billed = False
-        stalled = self.pending_stalled
-        self.pending_since = None
-        self.pending_request_id = None
-        self.pending_stalled = False
+        self.pending, stalled = clear(self.pending)
         if self.status == "running" and self.pause_started is not None:
             self.paused_seconds += self.clock() - self.pause_started
             self.pause_started = None
@@ -1182,7 +1175,9 @@ class Run:
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
         self.result["cost_final"] = not self.busy
-        self.result["pending_reservation_usd"] = RESERVE if self.busy and self.pending_billed else 0
+        self.result["pending_reservation_usd"] = (
+            RESERVE if self.pending and self.pending.billed else 0
+        )
         self.result["controller_metrics"] = dict(
             controller=self.config.get("controller", "semantic_tactics"),
             failed_route_seconds=round(self.failed_route_ticks / 35, 3),
@@ -1267,21 +1262,21 @@ class Run:
                     self.control_rev += 1
                     self.log("orders", text=self.order, revision=self.order_rev)
             if (
-                self.busy
-                and self.pending_since is not None
-                and not self.pending_stalled
+                self.pending is not None
+                and self.pending.since is not None
+                and not self.pending.stalled
                 and self.started_play
                 and self.config.get("timing", "real_time") == "real_time"
                 and self.status in DISPATCHES
                 # pre-rework:harness.py:777 used 2 s as the real-time control lease, not a provider SLA.
-                and self.clock() - self.pending_since >= 2
+                and self.clock() - self.pending.since >= 2
             ):
-                self.pending_stalled = True
+                self.pending = mark_stalled(self.pending)
                 self.stall_total += 1
                 self._move("waiting_provider", "provider stalled")
                 self.log(
                     "provider_stall",
-                    request=self.pending_request_id,
+                    request=self.pending.request_id,
                     game_tick=self.observation.get("tick"),
                     seconds=2,
                     release="on reply: discard a stale success or enter provider error recovery",
@@ -1383,12 +1378,12 @@ class Run:
                     else:
                         self.log(
                             "provider_unsettled_after_engine_error",
-                            reserved_usd=RESERVE if self.pending_billed else 0,
+                            reserved_usd=RESERVE if self.pending and self.pending.billed else 0,
                         )
                 except Exception:
                     self.log(
                         "provider_unsettled_after_engine_error",
-                        reserved_usd=RESERVE if self.pending_billed else 0,
+                        reserved_usd=RESERVE if self.pending and self.pending.billed else 0,
                     )
         finally:
             try:
