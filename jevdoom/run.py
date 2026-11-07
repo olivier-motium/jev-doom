@@ -162,16 +162,48 @@ class Run:
     def save_budget(self):
         self.store.save_ledger(self.ledger)
 
-    def invalidate_objective(self, reason):
-        self.end_tactic("invalidated")
-        self.log(
-            "objective_invalidated",
-            objective=self.objective,
-            reason=reason,
-            game_tick=self.sim_ticks,
-        )
-        self.objective = None
-        self.control_rev += 1
+    def clear_objective(self, reason, detail=None):
+        if reason == "invalidated":
+            self.end_tactic("invalidated")
+            self.log(
+                "objective_invalidated",
+                objective=self.objective,
+                reason=detail,
+                game_tick=self.sim_ticks,
+            )
+            self.objective = None
+            self.control_rev += 1
+        elif reason == "new_game":
+            self.objective = None
+            self.last_action = None
+            self.controls = {}
+        elif reason == "weapon_complete":
+            self.log(
+                "objective_complete",
+                goal="upgrade_weapon",
+                subject=self.objective.get("subject") or {},
+                reason=detail,
+            )
+            self.objective = None
+            self.last_action = None
+            self.control_rev += 1
+            self.controls = {
+                "released": True,
+                "reason": "Weapon objective finished or invalid; request fresh goal",
+            }
+        elif reason == "tactic_end":
+            self.end_tactic(detail)
+            self.last_action = None
+            if detail != "completed":
+                self.control_rev += 1
+            self.objective = None
+        elif reason == "orders":
+            self.end_tactic("invalidated")
+            self.last_action = None
+            self.objective = None
+            self.control_rev += 1
+        else:
+            raise ValueError(f"Unknown objective clear reason: {reason!r}")
 
     def new_game(self):
         self.engine.start(
@@ -184,9 +216,7 @@ class Run:
         self.position_history = deque(maxlen=35)
         self.last_failed_tick = -1000
         self.navigation_feedback = None
-        self.objective = None
-        self.last_action = None
-        self.controls = {}
+        self.clear_objective("new_game")
         self.seq = 0
         self.sim_ticks = 0
         self.start_wall = self.clock()
@@ -350,21 +380,10 @@ class Run:
             subject = self.objective.get("subject") or {}
             carried = owns_pickup(subject.get("id", "").rsplit("_", 1)[0], p["carrying"])
             if carried or subject.get("id") not in self.memory:
-                self.log(
-                    "objective_complete",
-                    goal="upgrade_weapon",
-                    subject=subject,
-                    reason="Weapon now carried"
-                    if carried
-                    else "Target no longer in observed memory",
+                self.clear_objective(
+                    "weapon_complete",
+                    "Weapon now carried" if carried else "Target no longer in observed memory",
                 )
-                self.objective = None
-                self.last_action = None
-                self.control_rev += 1
-                self.controls = {
-                    "released": True,
-                    "reason": "Weapon objective finished or invalid; request fresh goal",
-                }
         p["velocity"] = [round(var("VELOCITY_X") * 35, 1), round(var("VELOCITY_Y") * 35, 1)]
         pos = [p["x"], p["y"]]
         self.position_history.append(pos)
@@ -380,8 +399,9 @@ class Run:
             subject.get("kind") in ("health", "ammo", "weapon", "armor", "key")
             and subject.get("id") not in self.memory
         ):
-            self.invalidate_objective(
-                "Pickup no longer observed after nearby approach; replan without inferring collection"
+            self.clear_objective(
+                "invalidated",
+                "Pickup no longer observed after nearby approach; replan without inferring collection",
             )
         entities.sort(key=lambda e: (not e["visible"], e["distance"]))
         obstacles = [e for e in entities if e["kind"] == "obstacle"]
@@ -574,11 +594,7 @@ class Run:
                     if stuck
                     else "unavailable"
                 )
-                self.end_tactic(reason)
-                self.last_action = None
-                if reason != "completed":
-                    self.control_rev += 1
-                self.objective = None
+                self.clear_objective("tactic_end", reason)
         self.observation["survival"] = dict(
             stationary_seconds=round((self.sim_ticks - self.stationary_since) / 35, 2),
             escape_guard="At health30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
@@ -1256,10 +1272,7 @@ class Run:
                         continue
                     self.order = text
                     self.order_rev += 1
-                    self.end_tactic("invalidated")
-                    self.last_action = None
-                    self.objective = None
-                    self.control_rev += 1
+                    self.clear_objective("orders")
                     self.log("orders", text=self.order, revision=self.order_rev)
             if (
                 self.pending is not None
