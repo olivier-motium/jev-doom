@@ -53,7 +53,7 @@ class ReplaySession:
         self.recording = recording
         self.frame_interval = frame_interval
         self.error = None
-        self.stopped = False
+        self.state = "booting"
         self.start_lock = threading.Lock()
         self.thread = threading.Thread(target=self._play, daemon=True)
 
@@ -96,7 +96,9 @@ class ReplaySession:
             result=self.result if status == "replay_finished" else {},
             replay=True,
         )
-        self.view_port.publish(snapshot, image.getvalue(), frame.tic)
+        with self.start_lock:
+            self.view_port.publish(snapshot, image.getvalue(), frame.tic)
+            self.state = status
 
     def _play(self):
         shown = []
@@ -126,12 +128,16 @@ class ReplaySession:
                 if frame is None and not self.stop_event.is_set():
                     raise RuntimeError("Replay ended without a terminal step")
                 self.stop_event.wait(self.frame_interval)
-            self.stopped = self.stop_event.is_set()
+            if self.stop_event.is_set():
+                with self.start_lock:
+                    self.state = "replay_stopped"
             self._publish(
                 frame, "replay_stopped" if self.stop_event.is_set() else "replay_finished", shown
             )
         except Exception as exc:
-            self.error = str(exc)
+            with self.start_lock:
+                self.error = str(exc)
+                self.state = "replay_error"
         finally:
             self.engine.close()
 
@@ -139,24 +145,31 @@ class ReplaySession:
         with self.start_lock:
             if self.thread.ident is None and not self.stop_event.is_set():
                 self.thread.start()
-        snapshot = self.view_port.read()
-        if self.error is not None:
+        with self.start_lock:
+            snapshot = self.view_port.read()
+            status = self.state
+            error = self.error
+        if status == "replay_error":
             state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
-            state.update(status="replay_error", error=self.error, replay=True)
+            state.update(status=status, error=error, replay=True)
             return state
-        if self.stopped or (self.stop_event.is_set() and self.thread.ident is None):
+        if status == "replay_stopped":
             state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
-            state.update(status="replay_stopped", replay=True)
+            state.update(status=status, replay=True)
             return state
-        return (
-            copy.deepcopy(snapshot[0]) if snapshot else {"status": "booting", "config": self.config}
-        )
+        state = copy.deepcopy(snapshot[0]) if snapshot else {"config": self.config}
+        state["status"] = status
+        return state
 
     def frame_snapshot(self):
         snapshot = self.view_port.read()
         return (snapshot[1], snapshot[2]) if snapshot else (b"", 0)
 
     def shutdown(self):
-        self.stop_event.set()
-        if self.thread.ident is not None:
+        with self.start_lock:
+            self.stop_event.set()
+            started = self.thread.ident is not None
+            if not started:
+                self.state = "replay_stopped"
+        if started:
             self.thread.join(timeout=3)
