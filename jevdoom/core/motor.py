@@ -173,7 +173,7 @@ def calculate_motor(
             face = math.degrees(math.atan2(target["y"] - p["y"], target["x"] - p["x"]))
         else:
             overrides.append("Locked face target no longer visible; no substitute")
-    # Approach facing (v47): within48units of a USE line approach point the eyes turn to the line itself, whatever the arrival direction, so the USE ray can reach it; the selected destination promised "face its line and USE".
+    # Approach facing (v47): within 48 units of a USE line approach point the eyes turn to the line itself, whatever the arrival direction, so the USE ray can reach it; the selected destination promised "face its line and USE".
     if (
         destination
         and not destination.get("walking_through")
@@ -198,11 +198,11 @@ def calculate_motor(
                 + destination["kind"]
                 + " line "
                 + destination["id"]
-                + " within48units of its approach point"
+                + " within 48 units of its approach point"
             )
     turn = angle(face - p["facing"])
     values[2] = max(-7, min(7, turn))
-    # One-tick check after startup: +7delta changes0degrees to353degrees (right).
+    # One-tick check after startup: +7 delta changes 0 degrees to 353 degrees (right).
     values[2] = -values[2]
     if move == "destination" and waypoint:
         d = dist(pos, waypoint)
@@ -229,7 +229,7 @@ def calculate_motor(
                 values[0] = values[1] = 0
                 move = "enemy_in_firing_range"
                 overrides.append(
-                    f"Enemy approach complete within{firing_range}units; stop translation instead of chasing through target"
+                    f"Enemy approach complete within {firing_range} units; stop translation instead of chasing through target"
                 )
     elif move == "back":
         values[0] = -35
@@ -270,7 +270,7 @@ def calculate_motor(
             if aim_error > tolerance:
                 values[3] = 0
                 overrides.append(
-                    f"Fire permission held until selected enemy is aligned within{tolerance}degrees; error{aim_error:.1f}"
+                    f"Fire permission held until selected enemy is aligned within {tolerance} degrees; error {aim_error:.1f}"
                 )
     eligible = min(
         observation.get("interaction_ahead_within_USE_range", []),
