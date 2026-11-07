@@ -43,16 +43,16 @@ def state_for_model(observation, objective, exploration_target, tactic_outcomes,
     state["standing_order"] = order
     state["order_revision"] = order_rev
     state["measurement_context"] = dict(
-        distance="Doom map units; player width32. Contact<64; close64-256; medium256-768; far>=768.",
-        bearing="Relative degrees: 0ahead, positive LEFT, negative RIGHT. +90left -90right.",
+        distance="Doom map units; player width 32. Contact <64; close 64-256; medium 256-768; far >=768.",
+        bearing="Relative degrees: 0 ahead, positive LEFT, negative RIGHT. +90 left, -90 right.",
         time="35 game ticks per second. World continues during your calls. Aiming, movement and firing run simultaneously; controls persist until replaced or lease expires.",
         aim="Vertical aim automatic. TRIGGER fire grants permission during the control lease; the motor waits until the exact FACE enemy is currently visible and aligned before firing. FACE and TRIGGER are independent choices in this call. Hitscan stops at first solid obstruction.",
-        physics="Max running speed about292 map units/second. Destination navigation follows collision-aware geometry. A gun must face its target to hit.",
+        physics="Max running speed about 292 map units/second. Destination navigation follows collision-aware geometry. A gun must face its target to hit.",
         uncertainty="Entity health and keys unknown. remembered positions can be stale.",
     )
     state["weapon_context"] = {
         "pistol": "Hitscan, one bullet per shot. Accurate at modest range when aimed.",
-        "shotgun": "Hitscan, seven pellets, about1shot/second. Strong under500units; pellet spread wastes shots at long range.",
+        "shotgun": "Hitscan, seven pellets, about 1 shot/second. Strong under 500 units; pellet spread wastes shots at long range.",
         "rocket launcher": "Explosive projectile: dangerous to the player at contact range.",
         "fist": "Melee requires contact range.",
     }
