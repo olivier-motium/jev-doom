@@ -605,7 +605,7 @@ def tactic_questions(menu, state=None):
     criteria = {
         t[
             "id"
-        ]: f"{t['label']}. Controls {t['controls']}. Route {t['route_units']}units. Visible threats near route {t['exposed_to']}. Feasibility: {t['feasibility']}. Prediction: {t['prediction']}."
+        ]: f"{t['label']}. Controls {t['controls']}. Route {t['route_units']} units. Visible threats near route {t['exposed_to']}. Feasibility: {t['feasibility']}. Prediction: {t['prediction']}."
         for t in menu
     }
     dq = dodge_question(state) if state else None

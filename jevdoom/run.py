@@ -427,7 +427,7 @@ class Run:
                 self.last_failed_tick = s.tic
                 self.navigation_feedback = dict(
                     target=attempted["id"],
-                    reason="Destination movement commanded but less than8units displacement over about2.5seconds",
+                    reason="Destination movement commanded but less than 8 units displacement over about 2.5 seconds",
                     tick=s.tic,
                     failed_attempts=self.nav.failed[attempted["id"]],
                 )
@@ -597,7 +597,7 @@ class Run:
                 self.clear_objective("tactic_end", reason)
         self.observation["survival"] = dict(
             stationary_seconds=round((self.sim_ticks - self.stationary_since) / 35, 2),
-            escape_guard="At health30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
+            escape_guard="At health 30 or less, stationary under visible threat: bounded local escape may override MOVE; aiming and firing remain model-controlled",
             active_escape=None,
         )
         self.frame_image = s.screen_buffer
@@ -882,7 +882,7 @@ class Run:
                         if self.config.get("timing", "real_time") == "pause_assisted"
                         else "World running on with controls released"
                     )
-                    + f"; next fresh-state attempt in{delay}seconds. Consecutive failures:{self.recovery_attempts}."
+                    + f"; next fresh-state attempt in {delay} seconds. Consecutive failures: {self.recovery_attempts}."
                 )
                 self.controls = {
                     "released": True,
@@ -1136,7 +1136,7 @@ class Run:
                 charged_or_reserved_usd=after["charged_usd"] - before["charged_usd"],
                 reported_usd=after["reported_usd"] - before["reported_usd"],
                 estimated_usd=after.get("estimated_usd", 0) - before.get("estimated_usd", 0),
-                basis="Direct estimates use public input-token pricing; missing actual charges retain0.05USD reservations",
+                basis="Direct estimates use public input-token pricing; missing actual charges retain 0.05 USD reservations",
             ),
         )
 
@@ -1221,7 +1221,7 @@ class Run:
         )
         self.result["approach_facing"] = dict(
             game_seconds=round(self.approach_facing_ticks / 35, 2),
-            attribution="Motor facing toward the selected exit or switch line within48units of its approach point; the selection, USE-range rule and exit-activation gate are unchanged",
+            attribution="Motor facing toward the selected exit or switch line within 48 units of its approach point; the selection, USE-range rule and exit-activation gate are unchanged",
         )
         self.result["doors"] = dict(
             use_pulses=sum(self.use_pulses.values()),
