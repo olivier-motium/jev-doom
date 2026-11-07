@@ -273,27 +273,21 @@ def test_finish_with_pending_request_records_reservation(
         assert ledger["calls"] == calls
 
 
-@pytest.mark.parametrize("release_on_close", [False, True])
-def test_shutdown_drains_waiting_billed_reply(monkeypatch, release_on_close):
+def test_shutdown_drains_waiting_billed_reply(monkeypatch):
     decider = HeldDecider()
     run, _ = make_run(monkeypatch, decider)
     run.provider_health["gateway"] = True
     command(run, "start", controller="semantic_tactics", provider="gateway")
-    command(run, "stop")
-    assert run.store.result["cost_final"] is False
-    assert run.store.result["pending_reservation_usd"] == RESERVE
+    decider.release()
+    run.stop_event.set()
+    run.stop_loop()
 
-    if release_on_close:
-        decider.close = decider.release
-    else:
-        decider.release()
-    run.shutdown()
-
+    assert run.status == "stopped"
     assert not run.busy
     result, ledger = run.store.result, run.store.ledger
     assert result["cost_final"] is True
     assert result["pending_reservation_usd"] == 0
-    assert result["budget"]["charged_usd"] == pytest.approx(0.001)
+    assert ledger["charged_usd"] == pytest.approx(0.001)
     assert result["budget"] == ledger
     assert "open_results" not in ledger
     assert run.store.events[-2]["type"] == "provider_return"

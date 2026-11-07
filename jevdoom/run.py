@@ -180,37 +180,19 @@ class Run:
             notes = {}
         for run_name, note in list(notes.items()):
             try:
-                if not note["settled"]:
-                    del notes[run_name]
-                    changed = True
-                    continue
-                try:
-                    result = self.store.read_result(run_name)
-                except FileNotFoundError as error:
-                    raise ValueError(f"Result file missing: {error}") from error
-                if (
-                    not isinstance(result, dict)
-                    or result.get("episode") != note["episode"]
-                    or not isinstance(result["config"], dict)
-                ):
-                    raise ValueError("Open result does not match the ledger")
-                result["budget"] = self.result_budget()
-                result["cost_final"] = True
-                result["pending_reservation_usd"] = 0
-                result.update(self.episode_costs(note["run_budget_start"], result["config"]))
+                if not isinstance(note.get("final"), dict):
+                    raise ValueError("Missing final values")
+                result = self.store.read_result(run_name)
+                if not isinstance(result, dict) or result.get("episode") != note["episode"]:
+                    raise ValueError("Result does not match the ledger")
+                result.update(note["final"])
                 self.store.write_result(result, run_name)
-            except (KeyError, TypeError, ValueError, AttributeError) as error:
-                logging.getLogger(__name__).warning(
-                    "Could not recover result for run %s: %s", run_name, error
-                )
-                del notes[run_name]
-                changed = True
-                continue
             except Exception as error:
                 logging.getLogger(__name__).warning(
                     "Could not recover result for run %s: %s", run_name, error
                 )
-                continue
+                if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):
+                    continue
             del notes[run_name]
             changed = True
         if changed:
@@ -872,7 +854,12 @@ class Run:
             settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
             note = self.ledger.get("open_results", {}).get(run_name)
             if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
-                note["settled"] = True
+                note["final"] = dict(
+                    budget=self.result_budget(),
+                    cost_final=True,
+                    pending_reservation_usd=0,
+                    **self.episode_costs(),
+                )
             self.save_budget()
         age = self.clock() - job["snapshot_mono"]
         self.latencies.append(r.get("elapsed_ms", 0))
@@ -1179,14 +1166,10 @@ class Run:
             self.log(kind, **data)
         return result.buttons
 
-    def episode_costs(self, run_budget_start=None, config=None):
-        if run_budget_start is None:
-            run_budget_start = getattr(self, "run_budget_start", None)
-        if run_budget_start is None:
+    def episode_costs(self):
+        if not hasattr(self, "run_budget_start"):
             return {}
-        if config is None:
-            config = self.config
-        if config.get("controller") == "local":
+        if self.config.get("controller") == "local":
             return dict(
                 reported_episode_cost_usd=0,
                 episode_provider_calls=0,
@@ -1198,13 +1181,13 @@ class Run:
                     basis="Local rule uses no provider",
                 ),
             )
-        provider = config.get("provider_key", "gateway")
-        before = run_budget_start["providers"][provider]
+        provider = self.config.get("provider_key", "gateway")
+        before = self.run_budget_start["providers"][provider]
         after = self.provider_ledgers[provider]
         return dict(
             reported_episode_cost_usd=self.ledger["reported_usd"]
-            - run_budget_start["reported_usd"],
-            episode_provider_calls=self.ledger["calls"] - run_budget_start["calls"],
+            - self.run_budget_start["reported_usd"],
+            episode_provider_calls=self.ledger["calls"] - self.run_budget_start["calls"],
             provider_episode_cost=dict(
                 provider=provider,
                 charged_or_reserved_usd=after["charged_usd"] - before["charged_usd"],
@@ -1305,17 +1288,24 @@ class Run:
         self.result.update(self.episode_costs())
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
+            self.store.write_result(self.result)
             if self.pending and self.pending.billed:
                 self.ledger.setdefault("open_results", {})[Path(self.run_dir).name] = dict(
-                    episode=self.episode,
-                    request_id=self.pending.request_id,
-                    run_budget_start=self.run_budget_start,
-                    settled=False,
+                    episode=self.episode, request_id=self.pending.request_id
                 )
-                self.save_budget()
-            self.store.write_result(self.result)
         if self.store.record_path() is not None:
             self.engine.close()
+
+    def take_replies(self):
+        while reply := self.decider.poll():
+            job, response = reply
+            self.log(
+                "provider_return",
+                request=job["id"],
+                request_episode=job["episode"],
+                response=response,
+            )
+            self.accept_reply(job, response)
 
     def tick(self):
         with self.lock:
@@ -1374,15 +1364,7 @@ class Run:
                     seconds=2,
                     release="on reply: discard a stale success or enter provider error recovery",
                 )
-            while reply := self.decider.poll():
-                job, response = reply
-                self.log(
-                    "provider_return",
-                    request=job["id"],
-                    request_episode=job["episode"],
-                    response=response,
-                )
-                self.accept_reply(job, response)
+            self.take_replies()
             if self.status == "recovering" and self.clock() >= self.retry_at:
                 self.capture()
                 self._move("warming", "recovery retry")
@@ -1480,51 +1462,21 @@ class Run:
                     )
         finally:
             try:
-                with self.lock:
-                    if self.stop_event.is_set():
-                        self.finish("stopped")
-                    self.publish_snapshot()
+                self.stop_loop()
             finally:
                 self.engine.close()
+
+    def stop_loop(self):
+        with self.lock:
+            if self.stop_event.is_set():
+                self.finish("stopped")
+                self.take_replies()
+            self.publish_snapshot()
 
     def shutdown(self):
         self.stop_event.set()
         self.engine_thread.join(timeout=3)
-        still_live = self.status in LIVE
-        pending_after_join = self.pending
         self.decider.close()
-
-        def unsettled(reason, pending):
-            logging.getLogger(__name__).warning("Provider unsettled after shutdown: %s", reason)
-            self.log(
-                "provider_unsettled_after_shutdown",
-                request=pending.request_id if pending else None,
-                reason=reason,
-                reserved_usd=RESERVE if pending and pending.billed else 0,
-            )
-
-        if still_live:
-            unsettled("run still live after engine join", pending_after_join)
-            return
-        # Match AsyncDecider.close's 2 s worker join bound to keep shutdown bounded.
-        if self.lock.acquire(timeout=2):
-            try:
-                if self.status in LIVE:
-                    unsettled("run still live after engine join", self.pending)
-                    return
-                while self.busy and (reply := self.decider.poll()):
-                    job, response = reply
-                    self.log(
-                        "provider_return",
-                        request=job["id"],
-                        request_episode=job["episode"],
-                        response=response,
-                    )
-                    self.accept_reply(job, response)
-            finally:
-                self.lock.release()
-        else:
-            unsettled("lock not acquired within 2 s", self.pending)
 
     def _build_view(self):
         with self.lock:
