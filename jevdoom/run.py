@@ -110,6 +110,7 @@ class Run:
         if CAP_ORDER not in self.ledger.setdefault("accounting_notes", []):
             self.ledger["accounting_notes"].append(CAP_ORDER)
             self.save_budget()
+        self.recover_result()
         self.observation = {}
         self.records = deque(maxlen=500)
         self.latencies = deque(maxlen=300)
@@ -161,6 +162,33 @@ class Run:
 
     def save_budget(self):
         self.store.save_ledger(self.ledger)
+
+    def result_budget(self):
+        budget = copy.deepcopy(self.ledger)
+        budget.pop("open_result", None)
+        return budget
+
+    def recover_result(self):
+        note = self.ledger.get("open_result")
+        if not note:
+            return
+        if note["settled"]:
+            try:
+                result = self.store.read_result(note["run_name"])
+                if not isinstance(result, dict) or result.get("episode") != note["episode"]:
+                    raise ValueError("Open result episode does not match the ledger")
+            except (OSError, ValueError) as error:
+                logging.getLogger(__name__).warning(
+                    "Could not recover result for run %s: %s", note["run_name"], error
+                )
+            else:
+                result["budget"] = self.result_budget()
+                result["cost_final"] = True
+                result["pending_reservation_usd"] = 0
+                result.update(self.episode_costs(note["run_budget_start"], result["config"]))
+                self.store.write_result(result, note["run_name"])
+        del self.ledger["open_result"]
+        self.save_budget()
 
     def clear_objective(self, reason, detail=None):
         if reason == "invalidated":
@@ -329,7 +357,7 @@ class Run:
         self.run_dir = self.store.open_run(name)
         self.new_game()
         self.episode += 1
-        self.run_budget_start = copy.deepcopy(self.ledger)
+        self.run_budget_start = self.result_budget()
         self.log(
             "episode_start",
             config=self.config,
@@ -810,6 +838,9 @@ class Run:
         provider = job.get("provider", "gateway")
         if job.get("controller") != "local":
             settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
+            note = self.ledger.get("open_result")
+            if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
+                note["settled"] = True
             self.save_budget()
         age = self.clock() - job["snapshot_mono"]
         self.latencies.append(r.get("elapsed_ms", 0))
@@ -1031,11 +1062,15 @@ class Run:
         self.records.append(record)
         self.log("response", record=record)
         if self.result and self.result.get("episode") == job["episode"]:
-            self.result["budget"] = copy.deepcopy(self.ledger)
+            self.result["budget"] = self.result_budget()
             self.result["cost_final"] = True
             self.result["pending_reservation_usd"] = 0
             self.result.update(self.episode_costs())
             self.store.write_result(self.result)
+            note = self.ledger.get("open_result")
+            if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
+                del self.ledger["open_result"]
+                self.save_budget()
 
     def start_local_fallback(self):
         state = self.state_for_model()
@@ -1109,10 +1144,14 @@ class Run:
             self.log(kind, **data)
         return result.buttons
 
-    def episode_costs(self):
-        if not hasattr(self, "run_budget_start"):
+    def episode_costs(self, run_budget_start=None, config=None):
+        if run_budget_start is None:
+            run_budget_start = getattr(self, "run_budget_start", None)
+        if run_budget_start is None:
             return {}
-        if self.config.get("controller") == "local":
+        if config is None:
+            config = self.config
+        if config.get("controller") == "local":
             return dict(
                 reported_episode_cost_usd=0,
                 episode_provider_calls=0,
@@ -1124,13 +1163,13 @@ class Run:
                     basis="Local rule uses no provider",
                 ),
             )
-        provider = self.config.get("provider_key", "gateway")
-        before = self.run_budget_start["providers"][provider]
+        provider = config.get("provider_key", "gateway")
+        before = run_budget_start["providers"][provider]
         after = self.provider_ledgers[provider]
         return dict(
             reported_episode_cost_usd=self.ledger["reported_usd"]
-            - self.run_budget_start["reported_usd"],
-            episode_provider_calls=self.ledger["calls"] - self.run_budget_start["calls"],
+            - run_budget_start["reported_usd"],
+            episode_provider_calls=self.ledger["calls"] - run_budget_start["calls"],
             provider_episode_cost=dict(
                 provider=provider,
                 charged_or_reserved_usd=after["charged_usd"] - before["charged_usd"],
@@ -1164,7 +1203,7 @@ class Run:
             wall_seconds=round(self.clock() - getattr(self, "start_wall", self.clock()), 2),
             player=self.observation.get("player"),
             progress=self.observation.get("progress"),
-            budget=copy.deepcopy(self.ledger),
+            budget=self.result_budget(),
         )
         terminal = self.engine.status()
         self.result["terminal_evidence"] = dict(
@@ -1231,6 +1270,15 @@ class Run:
         self.result.update(self.episode_costs())
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
+            if self.pending and self.pending.billed:
+                self.ledger["open_result"] = dict(
+                    run_name=Path(self.run_dir).name,
+                    episode=self.episode,
+                    request_id=self.pending.request_id,
+                    run_budget_start=self.run_budget_start,
+                    settled=False,
+                )
+                self.save_budget()
             self.store.write_result(self.result)
         if self.store.record_path() is not None:
             self.engine.close()
@@ -1409,6 +1457,19 @@ class Run:
         self.stop_event.set()
         self.engine_thread.join(timeout=3)
         self.decider.close()
+        if self.lock.acquire(timeout=2):
+            try:
+                while self.busy and (reply := self.decider.poll()):
+                    job, response = reply
+                    self.log(
+                        "provider_return",
+                        request=job["id"],
+                        request_episode=job["episode"],
+                        response=response,
+                    )
+                    self.accept_reply(job, response)
+            finally:
+                self.lock.release()
 
     def _build_view(self):
         with self.lock:
