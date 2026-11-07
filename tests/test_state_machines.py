@@ -49,14 +49,14 @@ class HeldDecider(ImmediateLocal):
         self.released = True
 
 
-def make_run(monkeypatch, decider=None):
+def make_run(monkeypatch, decider=None, store=None):
     clock = TickClock()
     with monkeypatch.context() as patch:
         patch.setattr(threading, "Thread", IdleThread)
         run = Run(
             engine=TrackingEngine(),
             decider=decider or ImmediateLocal(),
-            store=MemoryStore(),
+            store=store or MemoryStore(),
             clock=clock.monotonic,
         )
     run.new_game()
@@ -269,6 +269,72 @@ def test_finish_with_pending_request_records_reservation(
         assert ledger["charged_usd"] == pytest.approx(settled_cost)
         assert ledger["reported_usd"] == pytest.approx(settled_cost)
         assert ledger["calls"] == calls
+
+
+@pytest.mark.parametrize("release_on_close", [False, True])
+def test_shutdown_drains_waiting_billed_reply(monkeypatch, release_on_close):
+    decider = HeldDecider()
+    run, _ = make_run(monkeypatch, decider)
+    run.provider_health["gateway"] = True
+    command(run, "start", controller="semantic_tactics", provider="gateway")
+    command(run, "stop")
+    assert run.store.result["cost_final"] is False
+    assert run.store.result["pending_reservation_usd"] == RESERVE
+
+    if release_on_close:
+        decider.close = decider.release
+    else:
+        decider.release()
+    run.shutdown()
+
+    assert not run.busy
+    result, ledger = run.store.result, run.store.ledger
+    assert result["cost_final"] is True
+    assert result["pending_reservation_usd"] == 0
+    assert result["budget"]["charged_usd"] == pytest.approx(0.001)
+    assert ledger["charged_usd"] == pytest.approx(0.001)
+    assert result["budget"] == ledger
+    assert "open_result" not in ledger
+    assert run.store.events[-2]["type"] == "provider_return"
+    assert run.store.events[-1]["type"] == "response"
+
+
+def test_restart_recovers_result_after_settlement_write(monkeypatch):
+    class FailOnceStore(MemoryStore):
+        fail_write = False
+
+        def write_result(self, result, run_name=None):
+            if self.fail_write:
+                self.fail_write = False
+                raise OSError("result write interrupted")
+            super().write_result(result, run_name)
+
+    store = FailOnceStore()
+    decider = HeldDecider()
+    run, _ = make_run(monkeypatch, decider, store)
+    run.provider_health["gateway"] = True
+    command(run, "start", controller="semantic_tactics", provider="gateway")
+    command(run, "stop")
+    assert store.result["cost_final"] is False
+    assert store.result["pending_reservation_usd"] == RESERVE
+
+    store.fail_write = True
+    decider.release()
+    with pytest.raises(OSError, match="result write interrupted"):
+        run.tick()
+    assert store.ledger["charged_usd"] == pytest.approx(0.001)
+    assert store.result["cost_final"] is False
+
+    restarted, _ = make_run(monkeypatch, store=store)
+    result, ledger = store.result, store.ledger
+    assert result["cost_final"] is True
+    assert result["pending_reservation_usd"] == 0
+    assert result["budget"]["charged_usd"] == pytest.approx(0.001)
+    assert result["budget"] == ledger == restarted.ledger
+    assert result["reported_episode_cost_usd"] == pytest.approx(0.001)
+    assert result["episode_provider_calls"] == 1
+    assert result["provider_episode_cost"]["charged_or_reserved_usd"] == pytest.approx(0.001)
+    assert "open_result" not in ledger
 
 
 class ReplayEngine:

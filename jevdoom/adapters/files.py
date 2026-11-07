@@ -50,6 +50,20 @@ class FileStore:
         with (self.root / "provider-probes.jsonl").open("a") as handle:
             handle.write(json.dumps(record) + "\n")
 
-    def write_result(self, result):
-        if self.run_dir is not None:
-            (self.run_dir / "result.json").write_text(json.dumps(result, indent=2))
+    def result_path(self, run_name):
+        if not run_name or Path(run_name).name != run_name or run_name in (".", ".."):
+            raise ValueError("Invalid run name")
+        return self.root / run_name / "result.json"
+
+    def read_result(self, run_name):
+        return json.loads(self.result_path(run_name).read_text())
+
+    def write_result(self, result, run_name=None):
+        if run_name is None:
+            if self.run_dir is None:
+                return
+            run_name = self.run_dir.name
+        path = self.result_path(run_name)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(result, indent=2))
+        tmp.replace(path)
