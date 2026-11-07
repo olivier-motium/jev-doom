@@ -17,13 +17,13 @@ def test_illegal_run_transitions_are_rejected():
 
 
 def test_pending_request_lifecycle():
-    pending = submit(None, "decision", 7, 12.0, True)
+    pending = submit(None, 7, 12.0, True)
     assert pending.request_id == 7 and not pending.stalled
     pending = mark_stalled(pending)
     assert pending.stalled
     pending, stalled = clear(pending)
     assert pending is None and stalled
 
-    probe = submit(None, "probe", None, None, True)
+    probe = submit(None, None, None, True)
     assert probe.since is None and not probe.stalled
     assert clear(probe) == (None, False)

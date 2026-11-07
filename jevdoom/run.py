@@ -681,7 +681,7 @@ class Run:
             ).hexdigest(),
         )
         self.decider.submit(job)
-        self.pending = submit(self.pending, "probe", None, None, True)
+        self.pending = submit(self.pending, None, None, True)
 
     def dispatch(self):
         if self.busy or self.status not in DISPATCHES:
@@ -733,9 +733,7 @@ class Run:
         )
         self.log("request", **{k: v for k, v in job.items() if not k.endswith("_mono")})
         self.decider.submit(job)
-        self.pending = submit(
-            self.pending, "decision", job["id"], now, self.config["controller"] != "local"
-        )
+        self.pending = submit(self.pending, job["id"], now, self.config["controller"] != "local")
         if (
             self.started_play
             and self.config.get("timing") == "pause_assisted"
