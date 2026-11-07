@@ -26,6 +26,7 @@ from jevdoom.core.perception import observe_entities
 from jevdoom.core.motor import calculate_motor
 from jevdoom.core.budget import blocks, reserve, settle
 from jevdoom.core.geometry import dist
+from jevdoom.core.lifecycle import ACCEPTS_REPLY, CAN_PAUSE, DISPATCHES, LIVE, transition
 from jevdoom.core.catalog import (
     BUTTONS,
     EVALUATOR_FIELDS,
@@ -63,7 +64,7 @@ class Run:
         self.view_port = view or SnapshotView()
         self.commands = queue.Queue()
         self.lock = threading.RLock()
-        self.status = "booting"
+        self._status = "booting"
         self.error = None
         self.order = "Survive and advance through the level. Defeat visible threats, collect useful resources, explore unvisited routes, open doors and reach the exit."
         self.order_rev = 0
@@ -144,6 +145,13 @@ class Run:
         self.engine_thread = threading.Thread(target=self.engine_loop, daemon=True)
         self.engine_thread.start()
 
+    @property
+    def status(self):
+        return self._status
+
+    def _move(self, target, why):
+        self._status = transition(self.status, target, why)
+
     def log(self, type, **data):
         event = dict(type=type, at=utc(), episode=self.episode)
         event.update(data)
@@ -215,7 +223,7 @@ class Run:
         self.exploration_target = None
         self.control_rev = 0
         self.capture()
-        self.status = "ready"
+        self._move("ready", "game initialized")
 
     def begin_run(self, args):
         selected_map = str(args.get("map", self.config["map"])).upper()
@@ -298,7 +306,7 @@ class Run:
         )
         self.records.clear()
         self.result = {}
-        self.status = "warming"
+        self._move("warming", "run started")
         self.error = None
 
     def capture(self):
@@ -619,13 +627,7 @@ class Run:
         self.save_budget()
 
     def request_probe(self, args):
-        if self.busy or self.status in (
-            "running",
-            "warming",
-            "waiting_provider",
-            "recovering",
-            "paused",
-        ):
+        if self.busy or self.status in LIVE:
             return
         provider = args.get("provider", "gateway")
         state = args["state"]
@@ -666,7 +668,7 @@ class Run:
         self.pending_billed = True
 
     def dispatch(self):
-        if self.busy or self.status not in ("warming", "running"):
+        if self.busy or self.status not in DISPATCHES:
             return
         now = self.clock()
         projectile_ids = {p["id"] for p in closing_projectiles(self.observation) if p.get("id")}
@@ -844,11 +846,7 @@ class Run:
             validation_error = r.get("error", "Invalid provider answer")
         if validation_error:
             record["validation_error"] = validation_error
-        if job["episode"] != self.episode or self.status not in (
-            "warming",
-            "running",
-            "waiting_provider",
-        ):
+        if job["episode"] != self.episode or self.status not in ACCEPTS_REPLY:
             record["override_reasons"].append("Episode/order/state changed while request in flight")
         elif not r.get("ok") or validation_error:
             transient = (
@@ -860,7 +858,7 @@ class Run:
             if transient:
                 self.recovery_attempts += 1
                 self.recovery_total += 1
-                self.status = "recovering"
+                self._move("recovering", "provider failure")
                 self.end_tactic("invalidated")
                 self.last_action = None
                 if (
@@ -905,7 +903,7 @@ class Run:
                 )
         elif stalled:
             self.capture()
-            self.status = "warming"
+            self._move("warming", "stalled reply discarded")
             self.decision_tick = self.sim_ticks - 105
             record["override_reasons"].append(
                 "Provider stall: late answer discarded; fresh snapshot required"
@@ -996,7 +994,7 @@ class Run:
                 self.end_tactic("replaced")
                 self.start_option(job, picks, selected, self.config["controller"])
                 if self.status == "warming":
-                    self.status = "running"
+                    self._move("running", "decision accepted")
                     self.error = None
                     if not self.started_play:
                         self.start_wall = self.clock()
@@ -1136,7 +1134,7 @@ class Run:
         )
 
     def finish(self, reason):
-        if self.status not in ("running", "warming", "paused", "recovering", "waiting_provider"):
+        if self.status not in LIVE:
             return
         if reason == "dead" and self.observation.get("player"):
             for key, var in [
@@ -1147,7 +1145,7 @@ class Run:
             ]:
                 self.observation["player"][key] = int(self.engine.variable(var))
         self.end_tactic(reason)
-        self.status = reason
+        self._move(reason, "run finished")
         self.controls = dict(released=True, reason=reason)
         self.last_action = None
         self.result = dict(
@@ -1233,26 +1231,15 @@ class Run:
             while not self.commands.empty():
                 cmd, args = self.commands.get()
                 if cmd == "start":
-                    if self.busy or self.status in (
-                        "running",
-                        "warming",
-                        "paused",
-                        "recovering",
-                        "waiting_provider",
-                    ):
+                    if self.busy or self.status in LIVE:
                         continue
                     self.begin_run(args)
                 elif cmd == "probe":
                     self.request_probe(args)
                 elif cmd == "stop":
                     self.finish("stopped")
-                elif cmd == "pause" and self.status in (
-                    "running",
-                    "warming",
-                    "recovering",
-                    "waiting_provider",
-                ):
-                    self.status = "paused"
+                elif cmd == "pause" and self.status in CAN_PAUSE:
+                    self._move("paused", "operator pause")
                     self.control_rev += 1
                     if self.pause_started is None:
                         self.pause_started = self.clock()
@@ -1261,7 +1248,7 @@ class Run:
                     self.controls = {"released": True, "reason": "paused"}
                 elif cmd == "resume" and self.status == "paused":
                     self.capture()
-                    self.status = "warming"
+                    self._move("warming", "operator resume")
                 elif cmd == "orders":
                     text = args.get("text")
                     if not isinstance(text, str) or len(text) > MAX_ORDER_CHARS:
@@ -1285,13 +1272,13 @@ class Run:
                 and not self.pending_stalled
                 and self.started_play
                 and self.config.get("timing", "real_time") == "real_time"
-                and self.status in ("running", "warming")
+                and self.status in DISPATCHES
                 # pre-rework:harness.py:777 used 2 s as the real-time control lease, not a provider SLA.
                 and self.clock() - self.pending_since >= 2
             ):
                 self.pending_stalled = True
                 self.stall_total += 1
-                self.status = "waiting_provider"
+                self._move("waiting_provider", "provider stalled")
                 self.log(
                     "provider_stall",
                     request=self.pending_request_id,
@@ -1310,7 +1297,7 @@ class Run:
                 self.accept_reply(job, response)
             if self.status == "recovering" and self.clock() >= self.retry_at:
                 self.capture()
-                self.status = "warming"
+                self._move("warming", "recovery retry")
                 self.log(
                     "recovery_request",
                     attempt=self.recovery_attempts,
@@ -1386,7 +1373,7 @@ class Run:
                 self.finish("engine_error")
             except Exception:
                 pass
-            self.status = "engine_error"
+            self._move("engine_error", "engine loop failed")
             # A game failure must not strand billing or discard a paid response.
             if self.busy:
                 try:
