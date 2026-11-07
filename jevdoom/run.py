@@ -171,10 +171,8 @@ class Run:
                 reason=detail,
                 game_tick=self.sim_ticks,
             )
-            self.objective = None
             self.control_rev += 1
         elif reason == "new_game":
-            self.objective = None
             self.last_action = None
             self.controls = {}
         elif reason == "weapon_complete":
@@ -184,7 +182,6 @@ class Run:
                 subject=self.objective.get("subject") or {},
                 reason=detail,
             )
-            self.objective = None
             self.last_action = None
             self.control_rev += 1
             self.controls = {
@@ -196,14 +193,13 @@ class Run:
             self.last_action = None
             if detail != "completed":
                 self.control_rev += 1
-            self.objective = None
         elif reason == "orders":
             self.end_tactic("invalidated")
             self.last_action = None
-            self.objective = None
             self.control_rev += 1
         else:
             raise ValueError(f"Unknown objective clear reason: {reason!r}")
+        self.objective = None
 
     def new_game(self):
         self.engine.start(
