@@ -239,9 +239,15 @@ def test_billed_probe_is_busy_until_reply_settles(monkeypatch):
     assert run.ledger["charged_usd"] == pytest.approx(0.01)
 
 
-@pytest.mark.parametrize("controller,reservation", [("semantic_tactics", RESERVE), ("local", 0)])
-def test_finish_with_pending_request_records_reservation(monkeypatch, controller, reservation):
-    run, _ = make_run(monkeypatch, HeldDecider())
+@pytest.mark.parametrize(
+    "controller,reservation,settled_cost,calls",
+    [("semantic_tactics", RESERVE, 0.001, 1), ("local", 0, 0, 0)],
+)
+def test_finish_with_pending_request_records_reservation(
+    monkeypatch, controller, reservation, settled_cost, calls
+):
+    decider = HeldDecider()
+    run, _ = make_run(monkeypatch, decider)
     run.provider_health["gateway"] = True
     command(run, "start", controller=controller, provider="gateway")
     assert run.busy and run.pending.billed == (controller != "local")
@@ -249,6 +255,20 @@ def test_finish_with_pending_request_records_reservation(monkeypatch, controller
     assert run.status == "stopped" and run.result["cost_final"] is False
     assert run.result["pending_reservation_usd"] == reservation
     assert run.store.result["pending_reservation_usd"] == reservation
+
+    decider.release()
+    run.tick()
+    assert run.status == "stopped"
+    assert not run.busy and run.pending is None
+    for result in (run.result, run.store.result):
+        assert result["reason"] == "stopped"
+        assert result["cost_final"] is True
+        assert result["pending_reservation_usd"] == 0
+        assert result["budget"]["charged_usd"] == pytest.approx(settled_cost)
+    for ledger in (run.ledger, run.store.ledger):
+        assert ledger["charged_usd"] == pytest.approx(settled_cost)
+        assert ledger["reported_usd"] == pytest.approx(settled_cost)
+        assert ledger["calls"] == calls
 
 
 class ReplayEngine:
