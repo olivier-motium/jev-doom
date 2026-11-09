@@ -110,6 +110,7 @@ class Run:
         if CAP_ORDER not in self.ledger.setdefault("accounting_notes", []):
             self.ledger["accounting_notes"].append(CAP_ORDER)
             self.save_budget()
+        self.recover_result()
         self.observation = {}
         self.records = deque(maxlen=500)
         self.latencies = deque(maxlen=300)
@@ -161,6 +162,46 @@ class Run:
 
     def save_budget(self):
         self.store.save_ledger(self.ledger)
+
+    def result_budget(self):
+        budget = copy.deepcopy(self.ledger)
+        budget.pop("open_results", None)
+        return budget
+
+    def recover_result(self):
+        notes = self.ledger.get("open_results")
+        if notes is None:
+            return
+        changed = False
+        if not isinstance(notes, dict):
+            logging.getLogger(__name__).warning("Invalid open results in budget")
+            del self.ledger["open_results"]
+            changed = True
+            notes = {}
+        for run_name, note in list(notes.items()):
+            try:
+                if not isinstance(note.get("final"), dict):
+                    raise ValueError("Missing final values")
+                result = self.store.read_result(run_name)
+                if not isinstance(result, dict) or result.get("episode") != note["episode"]:
+                    raise ValueError("Result does not match the ledger")
+                result.update(note["final"])
+                self.store.write_result(result, run_name)
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "Could not recover result for run %s: %s", run_name, error
+                )
+                if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):
+                    continue
+            del notes[run_name]
+            changed = True
+        if changed:
+            if not notes:
+                self.ledger.pop("open_results", None)
+            try:
+                self.save_budget()
+            except Exception as error:
+                logging.getLogger(__name__).warning("Could not save recovered budget: %s", error)
 
     def clear_objective(self, reason, detail=None):
         if reason == "invalidated":
@@ -325,7 +366,7 @@ class Run:
         self.run_dir = self.store.open_run(name)
         self.new_game()
         self.episode += 1
-        self.run_budget_start = copy.deepcopy(self.ledger)
+        self.run_budget_start = self.result_budget()
         self.log(
             "episode_start",
             config=self.config,
@@ -804,8 +845,17 @@ class Run:
             self.paused_seconds += self.clock() - self.pause_started
             self.pause_started = None
         provider = job.get("provider", "gateway")
+        run_name = Path(self.run_dir).name if hasattr(self, "run_dir") else None
         if job.get("controller") != "local":
             settle(self.ledger, self.provider_ledgers[provider], r, RESERVE)
+            note = self.ledger.get("open_results", {}).get(run_name)
+            if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
+                note["final"] = dict(
+                    budget=self.result_budget(),
+                    cost_final=True,
+                    pending_reservation_usd=0,
+                    **self.episode_costs(),
+                )
             self.save_budget()
         age = self.clock() - job["snapshot_mono"]
         self.latencies.append(r.get("elapsed_ms", 0))
@@ -1027,11 +1077,18 @@ class Run:
         self.records.append(record)
         self.log("response", record=record)
         if self.result and self.result.get("episode") == job["episode"]:
-            self.result["budget"] = copy.deepcopy(self.ledger)
+            self.result["budget"] = self.result_budget()
             self.result["cost_final"] = True
             self.result["pending_reservation_usd"] = 0
             self.result.update(self.episode_costs())
             self.store.write_result(self.result)
+            notes = self.ledger.get("open_results", {})
+            note = notes.get(run_name)
+            if note and note["episode"] == job["episode"] and note["request_id"] == job["id"]:
+                del notes[run_name]
+                if not notes:
+                    del self.ledger["open_results"]
+                self.save_budget()
 
     def start_local_fallback(self):
         state = self.state_for_model()
@@ -1160,7 +1217,7 @@ class Run:
             wall_seconds=round(self.clock() - getattr(self, "start_wall", self.clock()), 2),
             player=self.observation.get("player"),
             progress=self.observation.get("progress"),
-            budget=copy.deepcopy(self.ledger),
+            budget=self.result_budget(),
         )
         terminal = self.engine.status()
         self.result["terminal_evidence"] = dict(
@@ -1184,7 +1241,7 @@ class Run:
             else "Pause-assisted (labelled): simulation paused on provider/control-lease stalls and during bounded backoff"
         )
         self.result["free_run_seconds"] = round(self.free_run_ticks / 35, 2)
-        self.result["cost_final"] = not self.busy
+        self.result["cost_final"] = not (self.pending and self.pending.billed)
         self.result["pending_reservation_usd"] = (
             RESERVE if self.pending and self.pending.billed else 0
         )
@@ -1228,8 +1285,23 @@ class Run:
         self.log("episode_end", result=self.result)
         if hasattr(self, "run_dir"):
             self.store.write_result(self.result)
+            if self.pending and self.pending.billed:
+                self.ledger.setdefault("open_results", {})[Path(self.run_dir).name] = dict(
+                    episode=self.episode, request_id=self.pending.request_id
+                )
         if self.store.record_path() is not None:
             self.engine.close()
+
+    def take_replies(self):
+        while reply := self.decider.poll():
+            job, response = reply
+            self.log(
+                "provider_return",
+                request=job["id"],
+                request_episode=job["episode"],
+                response=response,
+            )
+            self.accept_reply(job, response)
 
     def tick(self):
         with self.lock:
@@ -1288,15 +1360,7 @@ class Run:
                     seconds=2,
                     release="on reply: discard a stale success or enter provider error recovery",
                 )
-            while reply := self.decider.poll():
-                job, response = reply
-                self.log(
-                    "provider_return",
-                    request=job["id"],
-                    request_episode=job["episode"],
-                    response=response,
-                )
-                self.accept_reply(job, response)
+            self.take_replies()
             if self.status == "recovering" and self.clock() >= self.retry_at:
                 self.capture()
                 self._move("warming", "recovery retry")
@@ -1394,12 +1458,16 @@ class Run:
                     )
         finally:
             try:
-                with self.lock:
-                    if self.stop_event.is_set():
-                        self.finish("stopped")
-                    self.publish_snapshot()
+                self.stop_loop()
             finally:
                 self.engine.close()
+
+    def stop_loop(self):
+        with self.lock:
+            if self.stop_event.is_set():
+                self.finish("stopped")
+                self.take_replies()
+            self.publish_snapshot()
 
     def shutdown(self):
         self.stop_event.set()
